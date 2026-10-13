@@ -92,7 +92,7 @@ using a live session request. `first-ready` selects the first proven recovery
 request in stable report order; `first-proof` selects the first validation
 request. A specific `FINDING_ID:proof` or `FINDING_ID:recovery` is also accepted.
 
-Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds at most two low-impact requests per discovered candidate: a baseline and a validation probe. It can detect database error differentials, delimited shell arithmetic output, redirect behavior, and path-response differentials. Forms retain hidden/default fields and session cookies. Active mode still does not extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
+Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds bounded validation requests within `--max-requests`. It tests every user-controlled form and query field for SQL and Jinja-style template evaluation instead of relying on parameter names. SQL confirmation requires either a new database error or two repeatable tautology/contradiction pairs after reflection removal. Template and command confirmation require a computed result absent from both the request payload and baseline. Sink-oriented names still guide command, path, and redirect probes. Forms retain hidden/default fields and session cookies. Active mode does not submit recovery payloads or extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
 
 The default `--profile both` runs isolated desktop and mobile scans with separate cookie jars. Fixed browser headers include distinct user agents, `Sec-CH-UA-Mobile`, and platform values. The report tags every finding and summarizes status, body digest/length, form, parameter, and finding differences without printing response bodies. `--max-pages` and `--max-requests` apply to each profile.
 
@@ -115,6 +115,7 @@ Useful controls:
 - Cache bypass headers are sent and no response is stored after the process exits.
 - A flag-shaped value from passive crawling is only a candidate: it can be a decoy or example. `flag-recovered` is reserved for a value returned by an explicit, verified recovery probe; this version never sends one automatically.
 - A hypothesis is not a confirmed vulnerability. Low confidence means inspect and validate.
+- Probe order is fixed (command, template, SQL, path, redirect), so a tight request budget produces the same partial result on each run.
 
 Exit code `0` means the scan completed without high/critical findings, `1` means high/critical evidence exists, `2` means invalid usage, and `3` means no page could be scanned.
 

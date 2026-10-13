@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import threading
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from webchallscan.scanner import CMD_PROBE, CMD_RESULT, PROFILES, Scanner, scan_profiles
+from webchallscan.scanner import (
+    CMD_PROBE, CMD_RESULT, PROFILES, SSTI_PROBE, SSTI_RESULT, Scanner, scan_profiles,
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -40,6 +43,15 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == "/sanitize":
             value = values.get("cmd", [""])[0]
             self._send("".join(ch for ch in value if ch.isalnum()))
+        elif p.path == "/opaque-sql":
+            value = values.get("x7", [""])[0]
+            self._send("rows:42" if value == "' OR '1'='1'-- " else
+                       "rows:0" if value == "' OR '1'='2'-- " else "rows:42")
+        elif p.path == "/template":
+            value = values.get("message", [""])[0]
+            self._send(SSTI_RESULT if value == SSTI_PROBE else value)
+        elif p.path == "/escaped":
+            self._send(escape(values.get("x7", [""])[0]))
         elif p.path == "/session":
             self._send('<html><a href="/protected">protected</a></html>')
         elif p.path == "/protected":
@@ -105,6 +117,35 @@ def test_passive_flag_is_only_a_candidate(server):
     report = Scanner(server + "/flag", max_pages=1).scan()
     found = [f for f in report.findings if f.rule == "WEB-FLAG-CANDIDATE-001"]
     assert found and found[0].exploit_status == "validation-only"
+
+
+def test_boolean_sqli_is_found_with_an_opaque_parameter_name(server):
+    report = Scanner(server + "/opaque-sql?x7=hello", active=True, max_pages=1,
+                     max_requests=12).scan()
+    found = [f for f in report.findings if f.title == "SQL injection boolean behavior confirmed"]
+    assert found and found[0].parameter == "x7"
+    assert found[0].confidence == "high"
+    assert found[0].exploit_status == "validation-only"
+
+
+def test_html_escaped_reflection_is_not_boolean_sqli(server):
+    report = Scanner(server + "/escaped?x7=hello", active=True, max_pages=1,
+                     max_requests=12).scan()
+    assert not any(f.title == "SQL injection boolean behavior confirmed"
+                   for f in report.findings)
+
+
+def test_ssti_requires_a_server_computed_result(server):
+    confirmed = Scanner(server + "/template?message=hello", active=True, max_pages=1,
+                        max_requests=12).scan()
+    ready = [f for f in confirmed.findings if f.rule == "WEB-SSTI-001"
+             and f.exploit_status == "payload-ready"]
+    assert ready and "cat /flag" in ready[0].recovery_payload
+
+    reflected = Scanner(server + "/reflect?message=hello", active=True, max_pages=1,
+                        max_requests=12).scan()
+    assert not any(f.rule == "WEB-SSTI-001" and f.exploit_status == "payload-ready"
+                   for f in reflected.findings)
 
 
 def test_rejects_cross_origin_and_non_http(server):
