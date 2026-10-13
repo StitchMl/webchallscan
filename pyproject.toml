@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webchallscan"
-version = "0.2.0"
+version = "0.3.0"
 description = "Deterministic black-box scanner for authorized CTF web challenges"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,6 +20,16 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/webchallscan/browser_extension" = [
+  "browser_extension/manifest.json",
+  "browser_extension/service_worker.js",
+  "browser_extension/popup.html",
+  "browser_extension/popup.js",
+  "browser_extension/popup.css",
+  "browser_extension/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

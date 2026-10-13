@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>webchallscan Session Bridge</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <h1>webchallscan</h1>
+      <p>Send the active tab and its cookies to the local one-shot listener.</p>
+
+      <label for="endpoint">Listener URL</label>
+      <input
+        id="endpoint"
+        type="url"
+        value="http://127.0.0.1:8765/v1/session/import"
+        spellcheck="false"
+        autocomplete="off"
+      >
+
+      <label for="token">One-shot token</label>
+      <input
+        id="token"
+        type="password"
+        minlength="32"
+        maxlength="256"
+        spellcheck="false"
+        autocomplete="off"
+      >
+
+      <button id="capture" type="button">Capture active tab</button>
+      <output id="status" role="status" aria-live="polite"></output>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

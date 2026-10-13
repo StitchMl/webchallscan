@@ -4,14 +4,15 @@ import re
 import ssl
 from collections import deque
 from hashlib import sha256
-from http.cookiejar import CookieJar
+from http.cookiejar import Cookie, CookieJar
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, HTTPCookieProcessor, HTTPSHandler, Request, build_opener
 
-from .model import Finding, ScanReport
+from .model import Finding, ScanReport, redact_url
+from .session import BrowserSession
 
 CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
 CMD_RESULT = "WCSA7340WCSZ"
@@ -103,9 +104,9 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
 class Scanner:
     def __init__(self, target: str, *, active: bool = False, max_pages: int = 20,
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
-                 profile: str = "desktop") -> None:
+                 profile: str = "desktop", session: BrowserSession | None = None) -> None:
         parsed = urlsplit(target)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
         self.target = self._clean_url(target)
         self.origin = (parsed.scheme.lower(), parsed.netloc.lower())
@@ -116,15 +117,33 @@ class Scanner:
         if profile not in PROFILES:
             raise ValueError("profile must be desktop or mobile")
         self.profile = profile
+        self.session = session
         self.requests_sent = 0
         self.observations: dict[str, PageObservation] = {}
         context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
         self.cookies = CookieJar()
+        if session:
+            self._import_session_cookies(session)
         self.opener = build_opener(
             SameOriginRedirectHandler(self.origin),
             HTTPCookieProcessor(self.cookies),
             HTTPSHandler(context=context),
         )
+
+    def _import_session_cookies(self, session: BrowserSession) -> None:
+        host = urlsplit(self.target).hostname or ""
+        for item in session.cookies:
+            domain = item.domain.lstrip(".") or host
+            if host != domain and not host.endswith("." + domain):
+                raise ValueError("captured session contains a cookie outside the target origin")
+            self.cookies.set_cookie(Cookie(
+                version=0, name=item.name, value=item.value, port=None, port_specified=False,
+                domain=domain, domain_specified=bool(item.domain),
+                domain_initial_dot=item.domain.startswith("."), path=item.path or "/",
+                path_specified=True, secure=item.secure, expires=item.expires,
+                discard=item.expires is None, comment=None, comment_url=None,
+                rest={"HttpOnly": item.http_only, "SameSite": item.same_site}, rfc2109=False,
+            ))
 
     @staticmethod
     def _clean_url(url: str) -> str:
@@ -148,6 +167,8 @@ class Scanner:
             "Cache-Control": "no-store, no-cache, max-age=0",
             "Pragma": "no-cache",
         }
+        if self.session:
+            headers.update(dict(self.session.headers))
         if data is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = Request(url, data=data, method=method, headers=headers)
@@ -160,9 +181,17 @@ class Scanner:
             raw = exc.read(MAX_BODY)
             return Response(url, exc.code, {k.lower(): v for k, v in exc.headers.items()}, raw.decode("utf-8", "replace"))
 
-    def _finding(self, **kwargs: str) -> Finding:
+    def _finding(self, **kwargs: object) -> Finding:
         kwargs.setdefault("profile", self.profile)
-        return Finding(**kwargs)
+        headers = {**PROFILES[self.profile]}
+        if self.session:
+            headers.update(dict(self.session.headers))
+        kwargs.setdefault("client_headers", tuple(sorted(
+            (name, value) for name, value in headers.items()
+            if name.lower() in {"user-agent", "accept-language", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}
+        )))
+        kwargs.setdefault("session_cookies", tuple(sorted((cookie.name, cookie.value) for cookie in self.cookies)))
+        return Finding(**kwargs)  # type: ignore[arg-type]
 
     @staticmethod
     def _observe(response: Response, parser: PageParser) -> PageObservation:
@@ -189,12 +218,12 @@ class Scanner:
             out.append(self._finding(rule="WEB-DEBUG-001", title="Debug or stack-trace disclosure",
                 severity="medium", confidence="high", url=response.url,
                 evidence="The response contains a deterministic debug/stack-trace signature.",
-                vector=f"GET {response.url}",
+                vector=f"GET {redact_url(response.url)}",
                 patch="Disable production debug mode; return generic errors and keep traces in server-side logs."))
         if re.search(r"<title>\s*index of /", response.text, re.I):
             out.append(self._finding(rule="WEB-LIST-001", title="Directory listing exposed",
                 severity="medium", confidence="high", url=response.url,
-                evidence="HTML title matches an automatic directory index.", vector=f"GET {response.url}",
+                evidence="HTML title matches an automatic directory index.", vector=f"GET {redact_url(response.url)}",
                 patch="Disable directory indexes and explicitly publish only required files."))
         if self.origin[0] == "http" and any(t == "password" for form in parser.forms for _, t, _ in form.inputs):
             out.append(self._finding(rule="WEB-HTTP-001", title="Password submitted over cleartext HTTP",
@@ -207,7 +236,7 @@ class Scanner:
             out.append(self._finding(rule="WEB-FLAG-CANDIDATE-001", title="Flag-shaped value in passive response",
                 severity="medium", confidence="medium", url=response.url,
                 evidence=f"Response contains a flag-shaped candidate: {flag.group(0)[:220]}",
-                vector=f"GET {response.url} and verify that the value is accepted by the challenge.",
+                vector=f"GET {redact_url(response.url)} and verify that the value is accepted by the challenge.",
                 flag_path="The value may be a decoy, example, or real flag. Passive text alone cannot distinguish them.",
                 patch="Remove secrets from public responses and enforce authorization at the data boundary."))
         for form in parser.forms:
@@ -237,8 +266,11 @@ class Scanner:
             rules.append(("WEB-REDIR-001", "Possible open redirect or server-side URL input", "https://example.invalid/wcs", "Allowlist destinations and reject absolute or cross-origin URLs."))
         return [self._finding(rule=rule, title=title, severity="info", confidence="low", url=url,
             parameter=name, evidence=f"Parameter name '{name}' in a {method} form/query matches a sink-oriented heuristic; no vulnerability is claimed.",
-            vector=f"{method} {url} with {name}={payload!r}", patch=patch,
-            method=method, request_fields=defaults) for rule, title, payload, patch in rules]
+            vector=f"{method} {redact_url(url)} with {name}={payload!r}", patch=patch,
+            method=method, request_fields=defaults, proof_payload=payload,
+            expected_evidence=("database error or response differential" if rule == "WEB-SQLI-001" else
+                               CMD_RESULT if rule == "WEB-CMDI-001" else
+                               "status/body differential")) for rule, title, payload, patch in rules]
 
     @staticmethod
     def _set_query(url: str, parameter: str, value: str) -> str:
@@ -281,34 +313,42 @@ class Scanner:
             return self._finding(rule=finding.rule, title="SQL injection error behavior confirmed", severity="high", confidence="high",
                 url=finding.url, parameter=finding.parameter,
                 evidence="A quote introduces a database error signature absent from the baseline response.",
-                vector=f"{method} {finding.url} with {finding.parameter}=' confirms parser reachability; derive a DB-specific read-only UNION/boolean payload manually.",
+                vector=f"{method} {redact_url(finding.url)} with {finding.parameter}=' confirms parser reachability; derive a DB-specific read-only UNION/boolean payload manually.",
                 patch="Use prepared statements with bound parameters and a least-privileged database account.",
-                flag_path="The parameter reaches a SQL parser. Recovering the flag still requires schema/context discovery; this scan does not extract data.")
+                flag_path="The parameter reaches a SQL parser. Recovering the flag still requires schema/context discovery; this scan does not extract data.",
+                method=method, request_fields=finding.request_fields, proof_payload=probe,
+                expected_evidence="database error signature absent from baseline")
         if finding.rule == "WEB-CMDI-001" and CMD_RESULT in tested.text and CMD_RESULT not in baseline.text and CMD_RESULT not in CMD_PROBE:
             recovery = ";printf WCSA;cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null;printf WCSZ"
             return self._finding(rule=finding.rule, title="Command injection arithmetic execution confirmed", severity="critical", confidence="high",
                 url=finding.url, parameter=finding.parameter,
                 evidence=f"The response contains delimited computed output {CMD_RESULT}; that result is absent from both payload and baseline.",
-                vector=f"Proof: {method} {finding.url} with {finding.parameter}={CMD_PROBE!r}. Recovery: same request with {finding.parameter}={recovery!r}.",
+                vector=f"Proof: {method} {redact_url(finding.url)} with {finding.parameter}={CMD_PROBE!r}. Recovery: same request with {finding.parameter}={recovery!r}.",
                 patch="Remove shell execution; call the intended program with a fixed argument vector and allowlisted values.",
                 exploit_status="payload-ready",
                 flag_path=f"The verified shell syntax supports the recovery payload for {finding.parameter}; the scanner does not submit it automatically.",
-                method=method, request_fields=finding.request_fields)
+                method=method, request_fields=finding.request_fields, proof_payload=probe,
+                expected_evidence=CMD_RESULT, recovery_payload=recovery)
         location = tested.headers.get("location", "")
         if finding.rule == "WEB-REDIR-001" and location and urlsplit(urljoin(finding.url, location)).netloc == "example.invalid":
             return self._finding(rule=finding.rule, title="Cross-origin redirect confirmed", severity="medium", confidence="high",
                 url=finding.url, parameter=finding.parameter,
                 evidence="The response navigation reaches the supplied external origin.", vector=f"Set {finding.parameter}=https://example.invalid/wcs",
-                patch="Resolve redirects against a strict same-origin path allowlist.")
+                patch="Resolve redirects against a strict same-origin path allowlist.", method=method,
+                request_fields=finding.request_fields, proof_payload=probe,
+                expected_evidence="Location header points to example.invalid")
         if finding.rule == "WEB-FILE-001" and tested.status != baseline.status:
             return self._finding(rule=finding.rule, title="Path input changes resource behavior", severity="low", confidence="medium",
                 url=finding.url, parameter=finding.parameter,
                 evidence=f"A traversal-shaped nonexistent path changes HTTP status {baseline.status} -> {tested.status}; no file was read.",
-                vector=f"Set {finding.parameter}=../WCS_NONEXISTENT_7f31a9 to reproduce the differential.", patch=finding.patch)
+                vector=f"Set {finding.parameter}=../WCS_NONEXISTENT_7f31a9 to reproduce the differential.", patch=finding.patch,
+                method=method, request_fields=finding.request_fields, proof_payload=probe,
+                expected_evidence=f"HTTP status differs from baseline {baseline.status}")
         return None
 
     def scan(self) -> ScanReport:
-        report = ScanReport(self.target, self.active, profiles=(self.profile,))
+        report = ScanReport(self.target, self.active, profiles=(self.profile,),
+                            session_source=self.session.source if self.session else "none")
         queue = deque([self.target])
         seen: set[str] = set()
         successful_pages = 0
@@ -317,7 +357,7 @@ class Scanner:
             self._request(self.target, "HEAD")
             self._request(self.target, "OPTIONS")
         except (URLError, OSError, RuntimeError, ValueError) as exc:
-            report.errors.append(f"metadata request: {exc}")
+            report.errors.append("metadata request failed")
         while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
             url = queue.popleft()
             if url in seen:
@@ -326,7 +366,7 @@ class Scanner:
             try:
                 response = self._request(url)
             except (URLError, OSError, RuntimeError, ValueError) as exc:
-                report.errors.append(f"{url}: {exc}")
+                report.errors.append(f"{redact_url(url)}: request failed")
                 continue
             successful_pages += 1
             parser = PageParser()
@@ -350,7 +390,7 @@ class Scanner:
                     if confirmed:
                         report.findings.append(confirmed)
                 except (URLError, OSError, RuntimeError, ValueError) as exc:
-                    report.errors.append(f"active {finding.url}#{finding.parameter}: {exc}")
+                    report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
         unique = {item.id: item for item in report.findings}
         severity = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         report.findings = sorted(unique.values(), key=lambda f: (severity.get(f.severity, 9), f.url, f.rule, f.parameter, f.id))
@@ -361,7 +401,8 @@ class Scanner:
 
 def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobile"),
                   active: bool = False, max_pages: int = 20, timeout: float = 5.0,
-                  max_requests: int = 80, verify_tls: bool = True) -> ScanReport:
+                  max_requests: int = 80, verify_tls: bool = True,
+                  sessions: dict[str, BrowserSession] | None = None) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -369,7 +410,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
     scanners: dict[str, Scanner] = {}
     for profile in profiles:
         scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
-                          max_requests=max_requests, verify_tls=verify_tls, profile=profile)
+                          max_requests=max_requests, verify_tls=verify_tls, profile=profile,
+                          session=(sessions or {}).get(profile))
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
@@ -380,6 +422,7 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
         findings=[finding for report in reports for finding in report.findings],
         errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports) for error in report.errors],
         profiles=profiles,
+        session_source=next((report.session_source for report in reports if report.session_source != "none"), "none"),
     )
     if len(profiles) == 2:
         combined.findings.extend(_profile_differences(scanners[profiles[0]], scanners[profiles[1]], reports))
@@ -439,7 +482,7 @@ def _profile_differences(first: Scanner, second: Scanner,
                 profile="comparison",
                 evidence="; ".join(differences),
                 vector=(
-                    f"Repeat GET {url} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
+                    f"Repeat GET {redact_url(url)} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
                     f"and {PROFILES[second.profile]['Sec-CH-UA-Mobile']}; inspect profile-tagged candidates."
                 ),
                 patch="Apply the same authentication, authorization, validation, and output encoding to every device-specific route.",

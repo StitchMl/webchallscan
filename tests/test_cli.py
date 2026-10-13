@@ -7,6 +7,11 @@ def test_authorization_required(capsys):
     assert "--authorized" in capsys.readouterr().err
 
 
+def test_extension_path_does_not_require_scan_authorization(capsys):
+    assert main(["--extension-path"]) == 0
+    assert capsys.readouterr().out.strip().endswith("browser_extension")
+
+
 def test_total_scan_failure_has_distinct_exit(monkeypatch, capsys):
     report = ScanReport("http://127.0.0.1:1/", False, pages_scanned=0, errors=["unreachable"])
     monkeypatch.setattr("webchallscan.cli.scan_profiles", lambda *args, **kwargs: report)

@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "webchallscan Session Bridge",
+  "version": "0.1.0",
+  "description": "Send the active challenge tab and its cookies to a local webchallscan listener after an explicit click.",
+  "permissions": [
+    "activeTab",
+    "cookies"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_title": "Capture active challenge session",
+    "default_popup": "popup.html"
+  }
+}

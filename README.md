@@ -12,7 +12,7 @@ webchallscan --help
 ```
 
 No virtual environment is required. Runtime uses only Python's standard library and keeps no cache.
-JSON reports use the `webchallscan/v2` schema; every finding includes its
+JSON reports use the `webchallscan/v3` schema; every finding includes its
 desktop, mobile, or comparison profile.
 
 ## Use
@@ -26,6 +26,70 @@ webchallscan https://challenge.example/ --authorized --profile mobile
 webchallscan https://challenge.example/ --authorized --format json > report.json
 ```
 
+### Current browser session
+
+For a normally opened Chrome or Edge window, load the bundled unpacked
+extension. Locate it with `webchallscan --extension-path`, open
+`chrome://extensions` or `edge://extensions`, enable Developer mode, and choose
+**Load unpacked**. Then run:
+
+```powershell
+webchallscan --authorized --listen-session --active
+```
+
+The CLI prints a loopback endpoint and one-shot token. Keep the intended
+challenge tab active, open the extension, paste both values, and click
+**Capture active tab**. The scan starts from that exact URL with its current
+cookies, including `HttpOnly` cookies. The listener accepts one capture, keeps
+it only in memory, and sends nothing over the Internet.
+
+If Chrome or Edge was started with a local DevTools port, the CLI can attach
+without the extension:
+
+```powershell
+webchallscan --authorized --browser-session auto --active
+webchallscan --authorized --cdp http://127.0.0.1:9222 --active
+```
+
+A normally opened browser does not expose DevTools; use the extension in that
+case. `--session-file session.json` is also supported for the documented local
+JSON format. Session files contain credentials and should be protected and
+deleted after use.
+
+### Burp Repeater context
+
+Every finding contains a redacted replay block with method, request target,
+form-field names, browser profile, cookie names, proof payload, expected
+evidence, and a recovery payload only when it is proven. Export one raw HTTP
+request per proof/recovery action:
+
+```powershell
+webchallscan --authorized --listen-session --active --burp-output .\burp-requests
+```
+
+The default files redact query values, hidden fields, CSRF values, and cookies.
+For a local replay that must preserve the live authenticated session, opt in:
+
+```powershell
+webchallscan --authorized --listen-session --active `
+  --burp-output .\burp-private --include-session-secrets
+```
+
+The output directory must not already exist. Secret-bearing files are never
+created implicitly; protect and delete them after use.
+
+Burp Suite Community does not need a saved project for Repeater. After an
+initial scan, copy one proof or recovery request directly to the clipboard:
+
+```powershell
+webchallscan https://challenge.example --authorized --active `
+  --burp-request FINDING_ID:recovery --include-session-secrets | Set-Clipboard
+```
+
+Then use **Paste from clipboard** in Repeater. Omit
+`--include-session-secrets` for a redacted template. Clear the clipboard after
+using a live session request.
+
 Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds at most two low-impact requests per discovered candidate: a baseline and a validation probe. It can detect database error differentials, delimited shell arithmetic output, redirect behavior, and path-response differentials. Forms retain hidden/default fields and session cookies. Active mode still does not extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
 
 The default `--profile both` runs isolated desktop and mobile scans with separate cookie jars. Fixed browser headers include distinct user agents, `Sec-CH-UA-Mobile`, and platform values. The report tags every finding and summarizes status, body digest/length, form, parameter, and finding differences without printing response bodies. `--max-pages` and `--max-requests` apply to each profile.
@@ -35,6 +99,8 @@ Useful controls:
 - `--max-pages 20`: deterministic crawl bound.
 - `--max-requests 80`: hard request budget, including probes.
 - `--timeout 5`: per-request timeout.
+- `--session-wait 120`: extension capture timeout.
+- `--burp-output DIR`: create raw proof/recovery requests for Burp Repeater.
 - `--insecure`: only for challenge servers with intentionally invalid TLS.
 - `NO_COLOR=1`: disable automatic ANSI color.
 
