@@ -30,7 +30,7 @@ def parser() -> argparse.ArgumentParser:
     burp = p.add_mutually_exclusive_group()
     burp.add_argument("--burp-output", metavar="DIR", help="create a directory of raw Burp Repeater proof/recovery requests")
     burp.add_argument("--burp-request", metavar="ID[:KIND]",
-                      help="print one raw proof/recovery request only; suitable for Burp Community clipboard use")
+                      help="print one raw request; accepts an ID, first-proof, or first-ready")
     p.add_argument("--include-session-secrets", action="store_true",
                    help="include cookies and hidden values in Burp output/request only")
     p.add_argument("--max-pages", type=int, default=20)

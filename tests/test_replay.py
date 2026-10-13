@@ -73,4 +73,6 @@ def test_single_burp_community_request_is_clean_stdout_payload():
     assert "###" not in raw
     with pytest.raises(ValueError):
         select_burp_request(report, finding.id + ":missing")
+    assert select_burp_request(report, "first-ready", include_secrets=True) == raw
+    assert "cmd=%3Bprintf+PROOF" in select_burp_request(report, "first-proof")
 

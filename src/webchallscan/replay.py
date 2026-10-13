@@ -74,10 +74,17 @@ def write_burp_output(report: ScanReport, destination: str, include_secrets: boo
 def select_burp_request(report: ScanReport, selector: str, include_secrets: bool = False) -> str:
     identity, separator, kind = selector.partition(":")
     if not identity or (separator and kind not in {"proof", "recovery"}):
-        raise ValueError("--burp-request must be FINDING_ID, FINDING_ID:proof, or FINDING_ID:recovery")
-    finding = next((item for item in report.findings if item.id == identity), None)
+        raise ValueError("--burp-request must select a finding and optional proof/recovery kind")
+    if identity == "first-ready":
+        finding = next((item for item in report.findings if item.exploit_status == "payload-ready" and item.recovery_payload), None)
+        kind = kind or "recovery"
+    elif identity == "first-proof":
+        finding = next((item for item in report.findings if item.proof_payload), None)
+        kind = kind or "proof"
+    else:
+        finding = next((item for item in report.findings if item.id == identity), None)
     if finding is None:
-        raise ValueError("--burp-request finding ID was not produced by this scan")
+        raise ValueError("--burp-request selector matched no request in this scan")
     requests = dict(render_finding_requests(finding, include_secrets))
     selected_kind = kind or ("recovery" if "recovery" in requests else "proof")
     if selected_kind not in requests:

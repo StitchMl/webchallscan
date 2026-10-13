@@ -82,13 +82,15 @@ Burp Suite Community does not need a saved project for Repeater. After an
 initial scan, copy one proof or recovery request directly to the clipboard:
 
 ```powershell
-webchallscan https://challenge.example --authorized --active `
-  --burp-request FINDING_ID:recovery --include-session-secrets | Set-Clipboard
+webchallscan --authorized --listen-session --active `
+  --burp-request first-ready --include-session-secrets | Set-Clipboard
 ```
 
 Then use **Paste from clipboard** in Repeater. Omit
 `--include-session-secrets` for a redacted template. Clear the clipboard after
-using a live session request.
+using a live session request. `first-ready` selects the first proven recovery
+request in stable report order; `first-proof` selects the first validation
+request. A specific `FINDING_ID:proof` or `FINDING_ID:recovery` is also accepted.
 
 Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds at most two low-impact requests per discovered candidate: a baseline and a validation probe. It can detect database error differentials, delimited shell arithmetic output, redirect behavior, and path-response differentials. Forms retain hidden/default fields and session cookies. Active mode still does not extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
 
