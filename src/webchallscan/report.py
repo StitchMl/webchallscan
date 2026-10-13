@@ -22,13 +22,14 @@ def render_text(report: ScanReport, color: str = "auto") -> str:
     def c(value: str, style: str) -> str:
         return f"{ANSI[style]}{value}{ANSI['reset']}" if paint else value
     lines = [c("WEBCHALLSCAN", "label") + f"  {report.target}",
-             f"Mode: {'ACTIVE LOW-IMPACT' if report.active else 'PASSIVE'}  Pages: {report.pages_scanned}  Requests: {report.requests_sent}  Findings: {len(report.findings)}"]
+             f"Mode: {'ACTIVE LOW-IMPACT' if report.active else 'PASSIVE'}  Profiles: {','.join(report.profiles)}  Pages: {report.pages_scanned}  Requests: {report.requests_sent}  Findings: {len(report.findings)}"]
     if not report.findings:
         lines.append("\nNo evidence-backed findings. This does not prove the target is safe.")
     for item in report.findings:
         status_style = "ready" if item.exploit_status in {"payload-ready", "flag-recovered"} else "info"
         lines.extend(["", f"{item.id}  {c('[' + item.severity.upper() + ']', item.severity)} {item.title}",
             f"  {c('Target:', 'label')} {item.url}" + (f"  parameter={item.parameter}" if item.parameter else ""),
+            f"  {c('Profile:', 'label')} {item.profile}",
             f"  {c('Confidence:', 'label')} {item.confidence}",
             f"  {c('Evidence:', 'label')} {item.evidence}",
             f"  {c('Exploit:', 'label')} {c(item.exploit_status, status_style)}",

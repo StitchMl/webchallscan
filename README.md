@@ -12,6 +12,8 @@ webchallscan --help
 ```
 
 No virtual environment is required. Runtime uses only Python's standard library and keeps no cache.
+JSON reports use the `webchallscan/v2` schema; every finding includes its
+desktop, mobile, or comparison profile.
 
 ## Use
 
@@ -20,10 +22,13 @@ Authorization acknowledgment is mandatory:
 ```powershell
 webchallscan https://challenge.example/ --authorized
 webchallscan https://challenge.example/ --authorized --active --format text --color always
+webchallscan https://challenge.example/ --authorized --profile mobile
 webchallscan https://challenge.example/ --authorized --format json > report.json
 ```
 
 Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds at most two low-impact requests per discovered candidate: a baseline and a validation probe. It can detect database error differentials, delimited shell arithmetic output, redirect behavior, and path-response differentials. Forms retain hidden/default fields and session cookies. Active mode still does not extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
+
+The default `--profile both` runs isolated desktop and mobile scans with separate cookie jars. Fixed browser headers include distinct user agents, `Sec-CH-UA-Mobile`, and platform values. The report tags every finding and summarizes status, body digest/length, form, parameter, and finding differences without printing response bodies. `--max-pages` and `--max-requests` apply to each profile.
 
 Useful controls:
 
@@ -36,6 +41,7 @@ Useful controls:
 ## Scope and interpretation
 
 - Exact scheme + host + port only. Cross-origin links and form actions are blocked.
+- HTTP responses only. The scanner does not run JavaScript or emulate layout, touch events, service workers, or browser APIs. Client-side-only mobile behavior requires a browser engine and remains outside this version.
 - URL fragments are removed; normalized URLs are visited once.
 - Responses are capped at 1 MB.
 - Cache bypass headers are sent and no response is stored after the process exits.

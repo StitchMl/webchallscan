@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import ssl
 from collections import deque
+from hashlib import sha256
 from http.cookiejar import CookieJar
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -24,6 +25,20 @@ DEBUG_ERRORS = (
     "debug mode", "exception in thread", "fatal error:",
 )
 FLAG_RE = re.compile(r"(?:flag|ctf|picoctf|htb)\s*\{[^}\r\n]{1,200}\}", re.I)
+PROFILES = {
+    "desktop": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Sec-CH-UA": '"Chromium";v="124", "Not-A.Brand";v="99"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"Windows"',
+    },
+    "mobile": {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Sec-CH-UA": '"Chromium";v="124", "Not-A.Brand";v="99"',
+        "Sec-CH-UA-Mobile": "?1",
+        "Sec-CH-UA-Platform": '"Android"',
+    },
+}
 
 
 @dataclass
@@ -63,6 +78,16 @@ class Response:
     text: str
 
 
+@dataclass(frozen=True)
+class PageObservation:
+    url: str
+    status: int
+    body_length: int
+    body_sha256: str
+    forms: tuple[tuple[str, str, tuple[str, ...]], ...]
+    parameters: tuple[str, ...]
+
+
 class SameOriginRedirectHandler(HTTPRedirectHandler):
     def __init__(self, origin: tuple[str, str]) -> None:
         self.origin = origin
@@ -77,7 +102,8 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
 
 class Scanner:
     def __init__(self, target: str, *, active: bool = False, max_pages: int = 20,
-                 timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True) -> None:
+                 timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
+                 profile: str = "desktop") -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("target must be an absolute http:// or https:// URL")
@@ -87,7 +113,11 @@ class Scanner:
         self.max_pages = max(1, max_pages)
         self.timeout = max(0.1, timeout)
         self.max_requests = max(1, max_requests)
+        if profile not in PROFILES:
+            raise ValueError("profile must be desktop or mobile")
+        self.profile = profile
         self.requests_sent = 0
+        self.observations: dict[str, PageObservation] = {}
         context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
         self.cookies = CookieJar()
         self.opener = build_opener(
@@ -112,8 +142,9 @@ class Scanner:
             raise ValueError("cross-origin request blocked")
         self.requests_sent += 1
         headers = {
-            "User-Agent": "webchallscan/0.1 (+authorized-ctf)",
+            **PROFILES[self.profile],
             "Accept": "text/html,application/json,text/plain,*/*;q=0.5",
+            "Accept-Language": "en-US,en;q=0.8",
             "Cache-Control": "no-store, no-cache, max-age=0",
             "Pragma": "no-cache",
         }
@@ -130,7 +161,26 @@ class Scanner:
             return Response(url, exc.code, {k.lower(): v for k, v in exc.headers.items()}, raw.decode("utf-8", "replace"))
 
     def _finding(self, **kwargs: str) -> Finding:
+        kwargs.setdefault("profile", self.profile)
         return Finding(**kwargs)
+
+    @staticmethod
+    def _observe(response: Response, parser: PageParser) -> PageObservation:
+        forms = tuple(sorted(
+            (form.method, form.action, tuple(sorted(name for name, _, _ in form.inputs)))
+            for form in parser.forms
+        ))
+        parameters = set(name for form in parser.forms for name, _, _ in form.inputs)
+        parameters.update(name for name, _ in parse_qsl(urlsplit(response.url).query, keep_blank_values=True))
+        encoded = response.text.encode("utf-8", "replace")
+        return PageObservation(
+            url=response.url,
+            status=response.status,
+            body_length=len(encoded),
+            body_sha256=sha256(encoded).hexdigest(),
+            forms=forms,
+            parameters=tuple(sorted(parameters)),
+        )
 
     def _passive_findings(self, response: Response, parser: PageParser) -> list[Finding]:
         out: list[Finding] = []
@@ -258,7 +308,7 @@ class Scanner:
         return None
 
     def scan(self) -> ScanReport:
-        report = ScanReport(self.target, self.active)
+        report = ScanReport(self.target, self.active, profiles=(self.profile,))
         queue = deque([self.target])
         seen: set[str] = set()
         successful_pages = 0
@@ -283,6 +333,7 @@ class Scanner:
             ctype = response.headers.get("content-type", "")
             if "html" in ctype or "<html" in response.text[:500].lower():
                 parser.feed(response.text)
+            self.observations[response.url] = self._observe(response, parser)
             items = self._passive_findings(response, parser)
             report.findings.extend(items)
             candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
@@ -306,3 +357,92 @@ class Scanner:
         report.pages_scanned = successful_pages
         report.requests_sent = self.requests_sent
         return report
+
+
+def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobile"),
+                  active: bool = False, max_pages: int = 20, timeout: float = 5.0,
+                  max_requests: int = 80, verify_tls: bool = True) -> ScanReport:
+    """Run isolated profile scans and combine results in stable order."""
+    if not profiles or any(profile not in PROFILES for profile in profiles):
+        raise ValueError("profiles must contain desktop and/or mobile")
+    reports: list[ScanReport] = []
+    scanners: dict[str, Scanner] = {}
+    for profile in profiles:
+        scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
+                          max_requests=max_requests, verify_tls=verify_tls, profile=profile)
+        scanners[profile] = scanner
+        reports.append(scanner.scan())
+    combined = ScanReport(
+        target=reports[0].target,
+        active=active,
+        pages_scanned=sum(report.pages_scanned for report in reports),
+        requests_sent=sum(report.requests_sent for report in reports),
+        findings=[finding for report in reports for finding in report.findings],
+        errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports) for error in report.errors],
+        profiles=profiles,
+    )
+    if len(profiles) == 2:
+        combined.findings.extend(_profile_differences(scanners[profiles[0]], scanners[profiles[1]], reports))
+    severity = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    unique = {finding.id: finding for finding in combined.findings}
+    combined.findings = sorted(unique.values(), key=lambda finding: (
+        severity.get(finding.severity, 9), finding.url, finding.rule,
+        finding.profile, finding.parameter, finding.id,
+    ))
+    return combined
+
+
+def _profile_differences(first: Scanner, second: Scanner,
+                         reports: list[ScanReport]) -> list[Finding]:
+    out: list[Finding] = []
+    first_findings = {(item.url, item.rule, item.parameter) for item in reports[0].findings}
+    second_findings = {(item.url, item.rule, item.parameter) for item in reports[1].findings}
+    finding_difference = first_findings != second_findings
+    urls = sorted(set(first.observations) | set(second.observations))
+    for url in urls:
+        left = first.observations.get(url)
+        right = second.observations.get(url)
+        differences: list[str] = []
+        if left is None or right is None:
+            differences.append(f"page visible only to {first.profile if right is None else second.profile}")
+        else:
+            if left.status != right.status:
+                differences.append(f"status {first.profile}={left.status}, {second.profile}={right.status}")
+            if (left.body_length, left.body_sha256) != (right.body_length, right.body_sha256):
+                differences.append(
+                    f"body {first.profile}=len:{left.body_length},sha256:{left.body_sha256[:12]}; "
+                    f"{second.profile}=len:{right.body_length},sha256:{right.body_sha256[:12]}"
+                )
+            if left.forms != right.forms:
+                differences.append(f"form signatures differ ({len(left.forms)} vs {len(right.forms)})")
+            if left.parameters != right.parameters:
+                differences.append(
+                    f"parameters {first.profile}={list(left.parameters)}, {second.profile}={list(right.parameters)}"
+                )
+        left_rules = sorted((rule, parameter) for finding_url, rule, parameter in first_findings if finding_url == url)
+        right_rules = sorted((rule, parameter) for finding_url, rule, parameter in second_findings if finding_url == url)
+        if left_rules != right_rules:
+            differences.append(f"finding keys {first.profile}={left_rules}, {second.profile}={right_rules}")
+        if url == first.target and finding_difference:
+            left_only = sorted(first_findings - second_findings)[:8]
+            right_only = sorted(second_findings - first_findings)[:8]
+            differences.append(
+                f"profile-only findings {first.profile}={left_only}, {second.profile}={right_only}"
+            )
+        if differences:
+            out.append(Finding(
+                rule="WEB-PROFILE-DIFF-001",
+                title="Desktop/mobile response surface differs",
+                severity="info",
+                confidence="high",
+                url=url,
+                profile="comparison",
+                evidence="; ".join(differences),
+                vector=(
+                    f"Repeat GET {url} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
+                    f"and {PROFILES[second.profile]['Sec-CH-UA-Mobile']}; inspect profile-tagged candidates."
+                ),
+                patch="Apply the same authentication, authorization, validation, and output encoding to every device-specific route.",
+                flag_path="A device-specific surface may expose a distinct route or input. Validate its profile-tagged findings before flag recovery.",
+            ))
+    return out

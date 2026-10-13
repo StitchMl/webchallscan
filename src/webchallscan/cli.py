@@ -5,7 +5,7 @@ import sys
 
 from . import __version__
 from .report import render_json, render_text
-from .scanner import Scanner
+from .scanner import scan_profiles
 
 
 def parser() -> argparse.ArgumentParser:
@@ -13,6 +13,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("url", help="absolute HTTP(S) challenge URL")
     p.add_argument("--authorized", action="store_true", help="required acknowledgment that you may test this target")
     p.add_argument("--active", action="store_true", help="enable bounded, low-impact validation probes; never extracts flags")
+    p.add_argument("--profile", choices=("desktop", "mobile", "both"), default="both",
+                   help="HTTP client profile; both uses isolated cookies and budgets (default: both)")
     p.add_argument("--max-pages", type=int, default=20)
     p.add_argument("--max-requests", type=int, default=80)
     p.add_argument("--timeout", type=float, default=5.0)
@@ -29,9 +31,10 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --authorized is required; scan only targets you are permitted to test", file=sys.stderr)
         return 2
     try:
-        report = Scanner(args.url, active=args.active, max_pages=args.max_pages,
-                         max_requests=args.max_requests, timeout=args.timeout,
-                         verify_tls=not args.insecure).scan()
+        profiles = ("desktop", "mobile") if args.profile == "both" else (args.profile,)
+        report = scan_profiles(args.url, profiles=profiles, active=args.active,
+                               max_pages=args.max_pages, max_requests=args.max_requests,
+                               timeout=args.timeout, verify_tls=not args.insecure)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

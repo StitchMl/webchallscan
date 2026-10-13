@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from webchallscan.scanner import CMD_PROBE, CMD_RESULT, Scanner
+from webchallscan.scanner import CMD_PROBE, CMD_RESULT, PROFILES, Scanner, scan_profiles
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -26,6 +26,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p = urlsplit(self.path)
         values = parse_qs(p.query)
+        mobile = self.headers.get("Sec-CH-UA-Mobile") == "?1"
         if p.path == "/":
             self._send('<html><a href="/search?q=x">search</a><a href="/session">session</a><a href="/form">form</a><form action="/run" method="get"><input name="cmd"></form></html>')
         elif p.path == "/search":
@@ -47,6 +48,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send('<html><form action="/postrun" method="post"><input type="hidden" name="csrf" value="token-42"><input name="cmd" value="default"></form></html>')
         elif p.path == "/flag":
             self._send("CTF{unit_test_only}")
+        elif p.path == "/profiles":
+            if mobile:
+                self._send('<html><form action="/mobile-run" method="get"><input name="cmd"></form></html>')
+            else:
+                self._send('<html><form action="/desktop-search" method="get"><input name="q"></form></html>')
+        elif p.path == "/mobile-run":
+            value = values.get("cmd", [""])[0]
+            self._send(CMD_RESULT if mobile and value == CMD_PROBE else "mobile-ok")
+        elif p.path == "/desktop-search":
+            value = values.get("q", [""])[0]
+            self._send("SQL syntax near quote" if not mobile and value == "'" else "desktop-ok")
         elif p.path == "/out":
             self._send("", 302, "http://example.invalid/wcs")
         else:
@@ -130,4 +142,33 @@ def test_hidden_post_defaults_are_preserved(server):
 def test_reflection_does_not_fake_command_execution(server, path):
     report = Scanner(server + path, active=True, max_pages=1).scan()
     assert not any(f.rule == "WEB-CMDI-001" and f.exploit_status == "payload-ready" for f in report.findings)
+
+
+def test_fixed_profile_headers_and_isolated_cookie_jars(server):
+    desktop = Scanner(server, profile="desktop")
+    mobile = Scanner(server, profile="mobile")
+    assert desktop.cookies is not mobile.cookies
+    assert PROFILES["desktop"]["Sec-CH-UA-Mobile"] == "?0"
+    assert PROFILES["mobile"]["Sec-CH-UA-Mobile"] == "?1"
+    assert "Windows" in PROFILES["desktop"]["Sec-CH-UA-Platform"]
+    assert "Android" in PROFILES["mobile"]["Sec-CH-UA-Platform"]
+
+
+def test_both_profiles_find_distinct_surfaces_and_are_deterministic(server):
+    kwargs = dict(profiles=("desktop", "mobile"), active=True, max_pages=1, max_requests=12)
+    first = scan_profiles(server + "/profiles", **kwargs)
+    second = scan_profiles(server + "/profiles", **kwargs)
+    assert first.to_dict() == second.to_dict()
+    assert first.profiles == ("desktop", "mobile")
+    assert {finding.profile for finding in first.findings} >= {"desktop", "mobile", "comparison"}
+    desktop_sql = [finding for finding in first.findings
+                   if finding.profile == "desktop" and finding.title == "SQL injection error behavior confirmed"]
+    mobile_cmd = [finding for finding in first.findings
+                  if finding.profile == "mobile" and finding.title == "Command injection arithmetic execution confirmed"]
+    assert desktop_sql
+    assert mobile_cmd and mobile_cmd[0].exploit_status == "payload-ready"
+    difference = next(finding for finding in first.findings if finding.rule == "WEB-PROFILE-DIFF-001")
+    assert "sha256:" in difference.evidence
+    assert "parameters desktop=['q'], mobile=['cmd']" in difference.evidence
+    assert "<html" not in difference.evidence
 

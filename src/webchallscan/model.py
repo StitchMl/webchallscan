@@ -12,6 +12,7 @@ class Finding:
     severity: str
     confidence: str
     url: str
+    profile: str = "desktop"
     parameter: str = ""
     evidence: str = ""
     vector: str = ""
@@ -23,7 +24,7 @@ class Finding:
 
     @property
     def id(self) -> str:
-        seed = f"{self.rule}\0{self.url}\0{self.parameter}\0{self.evidence}"
+        seed = f"{self.rule}\0{self.profile}\0{self.url}\0{self.parameter}\0{self.evidence}"
         return sha256(seed.encode()).hexdigest()[:12]
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,13 +39,15 @@ class ScanReport:
     requests_sent: int = 0
     findings: list[Finding] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    schema: str = "webchallscan/v1"
+    profiles: tuple[str, ...] = ("desktop",)
+    schema: str = "webchallscan/v2"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "target": self.target,
             "active": self.active,
+            "profiles": list(self.profiles),
             "pages_scanned": self.pages_scanned,
             "requests_sent": self.requests_sent,
             "findings": [item.to_dict() for item in self.findings],
