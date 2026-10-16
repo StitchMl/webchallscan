@@ -39,6 +39,7 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
     if not isinstance(targets, list):
         raise SessionCaptureError("invalid CDP targets")
     selected = []
+    visible = []
     for item in targets:
         if not isinstance(item, dict) or item.get("type") != "page":
             continue
@@ -55,11 +56,14 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
                 client.close()
             if facts.get("focus"):
                 selected.append(item)
+            if facts.get("visible"):
+                visible.append(item)
         except (KeyError, ValueError, OSError, SessionCaptureError, json.JSONDecodeError):
             continue
-    if len(selected) != 1:
-        raise SessionCaptureError("focus exactly one HTTP(S) tab before starting CDP observation")
-    tab = selected[0]
+    candidates = selected if len(selected) == 1 else visible
+    if len(candidates) != 1:
+        raise SessionCaptureError("cannot identify a unique foreground HTTP(S) tab; close other browser windows or focus the test tab")
+    tab = candidates[0]
     target = _valid_http_url(tab["url"])
     p = urlsplit(target)
     origin = (p.scheme.lower(), p.netloc.lower())
