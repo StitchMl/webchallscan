@@ -109,6 +109,22 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Quick CTF workflow (no JSON setup)
+
+With a dedicated Chrome CDP window on the intended lab tab, run:
+
+```powershell
+webchallscan --authorized --cdp http://127.0.0.1:9222 --quick > quick-report.json
+```
+
+Interact with the challenge during the 20-second capture. This one command
+combines same-origin request discovery, passive HTTP policy findings and an
+automatic endpoint review plan. No manually authored `contract.json` is
+needed. The quick path **does not replay POST requests, fuzz inputs, or
+confirm IDOR/business-logic vulnerabilities**: a redacted traffic inventory
+cannot establish those conclusions. Advanced explicit-case validation remains
+available separately when a challenge provides two controlled roles.
+
 ### Explicit read-only API / cross-role authorization checks
 
 For an **authorized lab**, create a local JSON file containing test-resource
