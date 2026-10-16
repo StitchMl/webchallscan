@@ -9,6 +9,7 @@ from urllib.error import URLError
 from pathlib import Path
 
 from .access_checks import load_cases, run_readonly_cases
+from .api_contract import load_contract, validate_contract
 from .network import observe_cdp
 from .planner import load_inventory, plan_inventory
 from . import __version__
@@ -32,6 +33,7 @@ def parser() -> argparse.ArgumentParser:
     session.add_argument("--session-file", metavar="JSON", help="load exact URL, cookies and safe headers from a local JSON file")
     session.add_argument("--listen-session", action="store_true", help="wait once for the bundled browser extension")
     p.add_argument("--observe-network", type=float, metavar="SECONDS", help="read-only CDP traffic inventory while you navigate (requires --cdp)")
+    p.add_argument("--validate-api-contract", metavar="JSON", help="bounded GET-only IDOR, fuzz and business invariant checks")
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
     p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
@@ -74,6 +76,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.validate_api_contract is not None:
+        if not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory or args.check_api_cases:
+            print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout), indent=2))
+            return 0
+        except (ValueError, OSError, URLError, json.JSONDecodeError):
+            print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
             return 2
     if args.check_api_cases is not None:
         if not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory:
