@@ -40,6 +40,8 @@ def render_text(report: ScanReport, color: str = "auto") -> str:
             f"  {c('Proof:', 'label')} {replay['proof_payload'] or 'none'}  expect={replay['expected_evidence'] or 'manual comparison'}",
             f"  {c('Recovery:', 'label')} {item.recovery_payload if item.exploit_status == 'payload-ready' and item.recovery_payload else 'not proven'}",
             f"  {c('Patch:', 'label')} {item.patch}"])
+    if report.coverage:
+        lines.extend(["", c("Coverage limitations:", "medium"), *[f"  - {note}" for note in report.coverage]])
     if report.errors:
         lines.extend(["", c("Errors:", "medium"), *[
             f"  - {redact_url(e) if '://' in e else e}" for e in report.errors
