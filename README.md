@@ -109,6 +109,40 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Explicit read-only API / cross-role authorization checks
+
+For an **authorized lab**, create a local JSON file containing test-resource
+paths and the credentials of two lab accounts. Example structure (placeholders
+only; do not commit real credentials):
+
+```json
+{
+  "schema": "webchallscan/read-only-cases-v1",
+  "origin": "https://lab.example",
+  "cases": [
+    {
+      "path": "/api/test-resource-owned-by-a",
+      "owner_headers": {"Authorization": "Bearer ROLE_A_TOKEN"},
+      "other_headers": {"Authorization": "Bearer ROLE_B_TOKEN"}
+    }
+  ]
+}
+```
+
+Run at most 12 two-role comparisons (24 requests), using GET exclusively:
+
+```powershell
+webchallscan --authorized --check-api-cases .\\cases.json --timeout 5 > access-results.json
+```
+
+The origin and resources are supplied by the operator: **no domain hardcoding**.
+The checker does not enumerate IDs, replay captured requests, mutate resources,
+or submit injection payloads. It reports response status, size, content type
+and hash, but never includes credentials or response bodies. Matching successful
+responses are labeled low-confidence **manual review candidates** rather than
+confirmed IDOR findings; public or generic content can match legitimately.
+Store case files securely and delete them after the exercise.
+
 ### Burp Repeater context
 
 Every finding contains a redacted replay block with method, request target,
