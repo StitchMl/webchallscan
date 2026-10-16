@@ -143,6 +143,61 @@ responses are labeled low-confidence **manual review candidates** rather than
 confirmed IDOR findings; public or generic content can match legitimately.
 Store case files securely and delete them after the exercise.
 
+### Controlled API contracts: IDOR, input fuzz and logic invariants
+
+Create a local `contract.json` using **owned lab test resources** and dedicated
+test credentials. This mode uses GET only and at most 30 requests per run.
+It does not enumerate identifiers, run exploitation payloads, or replay POST
+operations; all origins are user-supplied and no lab is hardcoded.
+
+```json
+{
+  "schema": "webchallscan/api-contract-v1",
+  "origin": "https://your-lab.example",
+  "roles": {
+    "owner": {"Authorization": "Bearer OWNER_TEST_TOKEN"},
+    "other": {"Authorization": "Bearer OTHER_TEST_TOKEN"}
+  },
+  "cases": [
+    {
+      "kind": "idor",
+      "path": "/api/private-test-resource/123",
+      "owner": "owner",
+      "outsider": "other",
+      "expected_marker": "OWNED_TEST_RESOURCE_123"
+    },
+    {
+      "kind": "fuzz",
+      "path": "/api/search",
+      "role": "owner",
+      "query": {"q": "test"},
+      "parameter": "q"
+    },
+    {
+      "kind": "business",
+      "path": "/api/read-only-resource",
+      "role": "other",
+      "expected_statuses": [403, 404]
+    }
+  ]
+}
+```
+
+```powershell
+webchallscan --authorized --validate-api-contract .\\contract.json --timeout 5 > contract-results.json
+```
+
+IDOR is marked confirmed only if an explicitly designated **private test
+resource marker** is returned to both roles. This verifies the observed
+resource-access violation under the caller's ownership assumption, not the
+whole authorization model. Fuzzing changes only the specified GET query
+parameter using five bounded, non-destructive classes. An HTTP 5xx is an
+investigation signal, not an injection confirmation. Business rules are
+declarative **HTTP status invariants**, not automatic reasoning about
+multi-step purchases or transactions. The report excludes tokens, cookies,
+query values and raw response bodies. Keep test credentials out of version
+control and remove the local contract after use.
+
 ### Burp Repeater context
 
 Every finding contains a redacted replay block with method, request target,
