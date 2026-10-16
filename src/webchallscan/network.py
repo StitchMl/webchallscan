@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from urllib.parse import parse_qsl, urlsplit
 
+from .posture import inspect_response
 from .session import _CDP, _json_get, _loopback_url, _valid_http_url, SessionCaptureError
 
 
@@ -71,6 +72,7 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
     inflight: dict[str, dict[str, object]] = {}
     observations: dict[tuple[str, str, tuple[str, ...]], dict[str, object]] = {}
     counted = 0
+    posture_findings: dict[tuple[str, str, str], dict[str, str]] = {}
     try:
         client.call("Network.enable", {"maxTotalBufferSize": 0, "maxResourceBufferSize": 0})
         deadline = time.monotonic() + seconds
@@ -112,6 +114,14 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
                     code = int(status)
                     if code not in statuses:
                         statuses.append(code)
+                    raw_headers = response.get("headers", {})
+                    if isinstance(raw_headers, dict):
+                        for issue in inspect_response(
+                            str(item["method"]), str(item["path"]), str(item["type"]),
+                            code, raw_headers, origin[0] == "https"
+                        ):
+                            identity_issue = (issue["rule"], issue["method"], issue["path"])
+                            posture_findings[identity_issue] = issue
             elif kind in {"Network.loadingFinished", "Network.loadingFailed"}:
                 inflight.pop(str(data.get("requestId", "")), None)
     finally:
@@ -124,9 +134,11 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
             {**value, "statuses": sorted(value["statuses"])}
             for _, value in sorted(observations.items())
         ],
+        "passive_findings": [posture_findings[k] for k in sorted(posture_findings)],
         "limitations": [
             "Only traffic emitted after observation starts is visible.",
             "No request or response bodies, headers, cookies or query values are recorded.",
-            "No vulnerability testing or automatic request replay is performed.",
+            "Findings are passive policy observations, not verified exploitable vulnerabilities.",
+            "No active probes or automatic request replay are performed.",
         ],
     }
