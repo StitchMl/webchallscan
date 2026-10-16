@@ -5,7 +5,8 @@
   "description": "Send the active challenge tab and its cookies to a local webchallscan listener after an explicit click.",
   "permissions": [
     "activeTab",
-    "cookies"
+    "cookies",
+    "scripting"
   ],
   "host_permissions": [
     "http://127.0.0.1/*",
