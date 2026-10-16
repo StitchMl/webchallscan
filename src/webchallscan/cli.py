@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import site
 import sys
 import sysconfig
 from pathlib import Path
 
+from .network import observe_cdp
 from . import __version__
 from .report import render_json, render_text
 from .replay import select_burp_request, write_burp_output
@@ -26,6 +28,8 @@ def parser() -> argparse.ArgumentParser:
     session.add_argument("--cdp", metavar="URL", help="use a local Chrome DevTools endpoint, for example http://127.0.0.1:9222")
     session.add_argument("--session-file", metavar="JSON", help="load exact URL, cookies and safe headers from a local JSON file")
     session.add_argument("--listen-session", action="store_true", help="wait once for the bundled browser extension")
+    p.add_argument("--observe-network", type=float, metavar="SECONDS", help="read-only CDP traffic inventory while you navigate (requires --cdp)")
+    p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
     burp = p.add_mutually_exclusive_group()
     burp.add_argument("--burp-output", metavar="DIR", help="create a directory of raw Burp Repeater proof/recovery requests")
@@ -63,6 +67,20 @@ def main(argv: list[str] | None = None) -> int:
             print(_extension_path())
             return 0
         except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.observe_network is not None:
+        if not args.authorized:
+            print("error: --authorized is required", file=sys.stderr)
+            return 2
+        if not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
+            print("error: --observe-network requires --cdp and no positional URL/session source", file=sys.stderr)
+            return 2
+        try:
+            print("Observing focused tab: interact with it now...", file=sys.stderr, flush=True)
+            print(json.dumps(observe_cdp(args.cdp, args.observe_network, args.observe_limit), indent=2))
+            return 0
+        except (ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if not args.authorized:
