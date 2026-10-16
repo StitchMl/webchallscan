@@ -56,6 +56,7 @@ class PageParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.links: list[str] = []
+        self.scripts: list[str] = []
         self.forms: list[Form] = []
         self._form: Form | None = None
 
@@ -66,6 +67,8 @@ class PageParser(HTMLParser):
                 self.links.append(data["href"])
         elif tag.lower() in {"iframe", "frame"} and data.get("src"):
             self.links.append(data["src"])
+        elif tag.lower() == "script" and data.get("src"):
+            self.scripts.append(data["src"])
         elif tag.lower() == "form":
             self._form = Form(data.get("action", ""), data.get("method", "get").upper())
             self.forms.append(self._form)
@@ -421,6 +424,27 @@ class Scanner:
                 expected_evidence=f"HTTP status differs from baseline {baseline.status}")
         return None
 
+    @staticmethod
+    def _static_get_routes(source: str) -> list[str]:
+        """Find literal GET routes in scripts without evaluating JavaScript.
+
+        Dynamic expressions, POST requests and template strings are excluded.
+        These are discovery hints, not evidence of vulnerabilities.
+        """
+        patterns = (
+            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*[,)]""",
+            r"""\baxios\.get\s*\(\s*['"]([^'"]+)['"]""",
+            r"""\b(?:window\.)?open\s*\(\s*['"]GET['"]\s*,\s*['"]([^'"]+)['"]""",
+        )
+        routes: set[str] = set()
+        for pattern in patterns:
+            for found in re.findall(pattern, source, re.I):
+                if found.startswith(("/", "./", "../", "http://", "https://")) and not any(
+                    marker in found for marker in ("{", "}", "${", "\\")
+                ):
+                    routes.add(found)
+        return sorted(routes)
+
     def scan(self) -> ScanReport:
         report = ScanReport(self.target, self.active, profiles=(self.profile,),
                             session_source=self.session.source if self.session else "none")
@@ -452,9 +476,22 @@ class Scanner:
             items = self._passive_findings(response, parser)
             report.findings.extend(items)
             candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
-            # Discover links not exposed as <a> elements (GET forms, frames,
-            # canonical/alternate links). Do not submit forms during crawling.
-            for href in parser.links:
+            # Examine inline scripts and bounded same-origin JavaScript files for
+            # literal GET routes. Never execute JavaScript or issue inferred POSTs.
+            routes = list(parser.links)
+            if "html" in ctype or "<html" in response.text[:500].lower():
+                routes.extend(self._static_get_routes(response.text))
+                for script in parser.scripts[:10]:
+                    script_url = self._clean_url(urljoin(response.url, script))
+                    if not self._in_scope(script_url) or self.requests_sent >= self.max_requests:
+                        continue
+                    try:
+                        js = self._request(script_url)
+                        if len(js.text) <= MAX_BODY and js.status == 200:
+                            routes.extend(self._static_get_routes(js.text))
+                    except (URLError, OSError, RuntimeError, ValueError):
+                        continue
+            for href in routes:
                 try:
                     nxt = self._clean_url(urljoin(response.url, href))
                     parsed_nxt = urlsplit(nxt)
