@@ -8,6 +8,7 @@ import sysconfig
 from pathlib import Path
 
 from .network import observe_cdp
+from .planner import load_inventory, plan_inventory
 from . import __version__
 from .report import render_json, render_text
 from .replay import select_burp_request, write_burp_output
@@ -29,6 +30,8 @@ def parser() -> argparse.ArgumentParser:
     session.add_argument("--session-file", metavar="JSON", help="load exact URL, cookies and safe headers from a local JSON file")
     session.add_argument("--listen-session", action="store_true", help="wait once for the bundled browser extension")
     p.add_argument("--observe-network", type=float, metavar="SECONDS", help="read-only CDP traffic inventory while you navigate (requires --cdp)")
+    p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
+    p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
     burp = p.add_mutually_exclusive_group()
@@ -69,6 +72,19 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+    if args.plan_inventory is not None:
+        if not args.authorized or args.observe_network is not None or args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
+            print("error: --plan-inventory requires --authorized and cannot be combined with a browser source", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(plan_inventory(load_inventory(args.plan_inventory), args.expect_origin), indent=2))
+            return 0
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.expect_origin:
+        print("error: --expect-origin only applies to --plan-inventory", file=sys.stderr)
+        return 2
     if args.observe_network is not None:
         if not args.authorized:
             print("error: --authorized is required", file=sys.stderr)
