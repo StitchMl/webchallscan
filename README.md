@@ -78,11 +78,36 @@ use its features. The output inventories same-origin URL paths, query
 parameter **names**, HTTP methods, event counts, Chrome resource types and
 response status codes (including POST /graphql). It deliberately never
 records request/response bodies, headers, cookies, or parameter **values**.
-No active probes or POST replays are performed in this mode. It now also emits\n`passive_findings` for observable response policy weaknesses (HSTS, CSP,\nframing protections, MIME sniffing and conflicting CORS headers). These are\nconfiguration signals, **not confirmed exploitable vulnerabilities**; no\nrequest/response bodies or sensitive header values are retained. The inventory\ndoes not yet feed the existing active injection engine.
+No active probes or POST replays are performed in this mode. It now also emits
+`passive_findings` for observable response policy weaknesses (HSTS, CSP,
+framing protections, MIME sniffing and conflicting CORS headers). These are
+configuration signals, **not confirmed exploitable vulnerabilities**; no\nrequest/response bodies or sensitive header values are retained. The inventory
+does not yet feed the existing active injection engine.
 
 Chrome 136+ requires a non-default user-data directory for remote debugging.
 Keep port 9222 bound to loopback and do not use this profile for sensitive
 personal browsing. Do not expose CDP to another device or the internet.
+
+### Offline audit plan from the observed endpoints
+
+Turn any saved CDP inventory into a structured review plan without making
+additional network requests:
+
+```powershell
+webchallscan --authorized --plan-inventory inventory.json > audit-plan.json
+```
+
+Optionally ensure that the inventory refers to the lab you intend to inspect:
+
+```powershell
+webchallscan --authorized --plan-inventory inventory.json --expect-origin https://challenge.example > audit-plan.json
+```
+
+The origin is *not* hardcoded: the inventory determines it, and `--expect-origin`
+is a caller-supplied consistency check. The plan categorizes GraphQL operations,
+authentication flows, endpoint parameters and state-changing methods. Each
+planned check is marked `not-executed`; no vulnerability claim is produced
+without real validation. This stage never replays captured HTTP traffic.
 
 ### Burp Repeater context
 
