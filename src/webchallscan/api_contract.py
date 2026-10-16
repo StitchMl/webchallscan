@@ -57,7 +57,7 @@ def validate_contract(data, *, timeout=5.0, fetch=None):
         raise ValueError("invalid API contract schema")
     origin = data.get("origin")
     p = urlsplit(origin) if isinstance(origin, str) else None
-    if not p or p.scheme not in {"http", "https"} or not p.netloc or p.username or p.password or p.path or p.query or p.fragment:
+    if not p or p.scheme not in {"http", "https"} or not p.hostname or p.username or p.password or p.path or p.query or p.fragment or p.netloc.endswith("."):
         raise ValueError("origin must contain only scheme and authority")
     if not 0.2 <= timeout <= 15:
         raise ValueError("invalid timeout")
@@ -71,6 +71,10 @@ def validate_contract(data, *, timeout=5.0, fetch=None):
     cases = data.get("cases")
     if not isinstance(cases, list) or not 1 <= len(cases) <= 10:
         raise ValueError("provide 1-10 cases")
+    estimated = sum({"idor": 2, "fuzz": 6, "business": 1}.get(case.get("kind"), 31)
+                    if isinstance(case, dict) else 31 for case in cases)
+    if estimated > 30:
+        raise ValueError("request budget would exceed 30; split the contract")
     client = fetch or _fetch
     requests = 0
     findings, results = [], []
