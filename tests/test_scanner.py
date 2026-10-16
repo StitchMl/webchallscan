@@ -245,3 +245,11 @@ def test_parser_discovers_get_forms_frames_and_scripts():
     assert "/home" in parser.links
     assert "/delete" not in parser.links
     assert parser.scripts == ["/app.js"]
+
+
+def test_no_routes_explains_scan_coverage(server):
+    report = Scanner(server + "/protected", active=True, max_pages=3).scan()
+    assert report.pages_scanned == 1
+    assert any("No navigable links" in note for note in report.coverage)
+    assert any("No eligible query or form parameters" in note for note in report.coverage)
+    assert "coverage" in report.to_dict()
