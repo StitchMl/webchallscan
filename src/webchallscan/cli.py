@@ -5,6 +5,7 @@ import json
 import site
 import sys
 import sysconfig
+from urllib.error import URLError
 from pathlib import Path
 
 from .access_checks import load_cases, run_readonly_cases
@@ -81,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout), indent=2))
             return 0
-        except (ValueError, OSError, json.JSONDecodeError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
+        except (ValueError, OSError, URLError, json.JSONDecodeError) as exc:
+            print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)
             return 2
     if args.plan_inventory is not None:
         if not args.authorized or args.observe_network is not None or args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
