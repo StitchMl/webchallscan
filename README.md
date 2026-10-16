@@ -78,8 +78,7 @@ use its features. The output inventories same-origin URL paths, query
 parameter **names**, HTTP methods, event counts, Chrome resource types and
 response status codes (including POST /graphql). It deliberately never
 records request/response bodies, headers, cookies, or parameter **values**.
-No active probes or POST replays are performed in this mode. It does **not**
-produce vulnerability findings or feed the existing scan engine yet.
+No active probes or POST replays are performed in this mode. It now also emits\n`passive_findings` for observable response policy weaknesses (HSTS, CSP,\nframing protections, MIME sniffing and conflicting CORS headers). These are\nconfiguration signals, **not confirmed exploitable vulnerabilities**; no\nrequest/response bodies or sensitive header values are retained. The inventory\ndoes not yet feed the existing active injection engine.
 
 Chrome 136+ requires a non-default user-data directory for remote debugging.
 Keep port 9222 bound to loopback and do not use this profile for sensitive
