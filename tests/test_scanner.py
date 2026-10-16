@@ -213,3 +213,35 @@ def test_both_profiles_find_distinct_surfaces_and_are_deterministic(server):
     assert "parameters desktop=['q'], mobile=['cmd']" in difference.evidence
     assert "<html" not in difference.evidence
 
+
+def test_static_route_discovery_only_accepts_literal_get_paths():
+    source = """
+    fetch('/api/search?q=one');
+    axios.get('/api/items');
+    xhr.open('GET', '/api/health');
+    fetch('/api/delete', {method: 'POST'});
+    axios.post('/api/post');
+    fetch(`/api/${id}`);
+    fetch('https://other.example/data');
+    """
+    assert Scanner._static_get_routes(source) == [
+        "/api/health", "/api/items", "/api/search?q=one",
+        "https://other.example/data",
+    ]
+
+
+def test_parser_discovers_get_forms_frames_and_scripts():
+    from webchallscan.scanner import PageParser
+    parser = PageParser()
+    parser.feed("""
+    <form method="get" action="/search"><input name="q"></form>
+    <form method="post" action="/delete"><input name="id"></form>
+    <iframe src="/frame"></iframe>
+    <script src="/app.js"></script>
+    <link rel="canonical" href="/home">
+    """)
+    assert "/search" in parser.links
+    assert "/frame" in parser.links
+    assert "/home" in parser.links
+    assert "/delete" not in parser.links
+    assert parser.scripts == ["/app.js"]
