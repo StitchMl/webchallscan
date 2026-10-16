@@ -61,11 +61,16 @@ class PageParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         data = {k.lower(): (v or "") for k, v in attrs}
-        if tag.lower() == "a" and data.get("href"):
-            self.links.append(data["href"])
+        if tag.lower() in {"a", "link"} and data.get("href"):
+            if tag.lower() == "a" or data.get("rel", "").lower() in {"canonical", "alternate"}:
+                self.links.append(data["href"])
+        elif tag.lower() in {"iframe", "frame"} and data.get("src"):
+            self.links.append(data["src"])
         elif tag.lower() == "form":
             self._form = Form(data.get("action", ""), data.get("method", "get").upper())
             self.forms.append(self._form)
+            if self._form.method == "GET" and self._form.action:
+                self.links.append(self._form.action)
         elif tag.lower() in {"input", "textarea", "select"} and self._form and data.get("name"):
             self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
 
@@ -447,10 +452,18 @@ class Scanner:
             items = self._passive_findings(response, parser)
             report.findings.extend(items)
             candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
+            # Discover links not exposed as <a> elements (GET forms, frames,
+            # canonical/alternate links). Do not submit forms during crawling.
             for href in parser.links:
-                nxt = self._clean_url(urljoin(response.url, href))
-                if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
-                    queue.append(nxt)
+                try:
+                    nxt = self._clean_url(urljoin(response.url, href))
+                    parsed_nxt = urlsplit(nxt)
+                    if parsed_nxt.scheme not in {"http", "https"}:
+                        continue
+                    if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
+                        queue.append(nxt)
+                except ValueError:
+                    continue
         if self.active:
             probe_priority = {
                 "WEB-CMDI-001": 0,
