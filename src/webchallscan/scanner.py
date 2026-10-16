@@ -432,7 +432,7 @@ class Scanner:
         These are discovery hints, not evidence of vulnerabilities.
         """
         patterns = (
-            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*[,)]""",
+            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*\)""",
             r"""\baxios\.get\s*\(\s*['"]([^'"]+)['"]""",
             r"""\b(?:window\.)?open\s*\(\s*['"]GET['"]\s*,\s*['"]([^'"]+)['"]""",
         )
