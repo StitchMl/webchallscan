@@ -32,6 +32,7 @@ def parser() -> argparse.ArgumentParser:
     session.add_argument("--cdp", metavar="URL", help="use a local Chrome DevTools endpoint, for example http://127.0.0.1:9222")
     session.add_argument("--session-file", metavar="JSON", help="load exact URL, cookies and safe headers from a local JSON file")
     session.add_argument("--listen-session", action="store_true", help="wait once for the bundled browser extension")
+    p.add_argument("--quick", action="store_true", help="one-command CDP observation and audit triage; no contract files")
     p.add_argument("--observe-network", type=float, metavar="SECONDS", help="read-only CDP traffic inventory while you navigate (requires --cdp)")
     p.add_argument("--validate-api-contract", metavar="JSON", help="bounded GET-only IDOR, fuzz and business invariant checks")
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
@@ -76,6 +77,30 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
+            return 2
+    if args.quick:
+        if not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
+            print("error: --quick requires --authorized --cdp and no other scan mode", file=sys.stderr)
+            return 2
+        try:
+            print("Quick discovery running: use the selected lab tab now...", file=sys.stderr, flush=True)
+            observed = observe_cdp(args.cdp, 20.0, args.observe_limit)
+            plan = plan_inventory(observed)
+            print(json.dumps({
+                "schema": "webchallscan/quick-v1",
+                "origin": observed["origin"],
+                "observed_requests": observed["observed_requests"],
+                "endpoints": observed["endpoints"],
+                "passive_findings": observed["passive_findings"],
+                "triage": plan["checks"],
+                "active_tests_executed": 0,
+                "limitations": observed["limitations"] + [
+                    "No replayable bodies or independent roles were captured; IDOR and business-logic checks remain unverified."
+                ]
+            }, indent=2))
+            return 0
+        except (ValueError, OSError, json.JSONDecodeError):
+            print("error: quick discovery failed; check the focused CDP tab", file=sys.stderr)
             return 2
     if args.validate_api_contract is not None:
         if not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory or args.check_api_cases:
