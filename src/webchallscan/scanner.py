@@ -452,6 +452,7 @@ class Scanner:
         seen: set[str] = set()
         successful_pages = 0
         candidates: list[Finding] = []
+        discovered_routes = 0
         try:
             self._request(self.target, "HEAD")
             self._request(self.target, "OPTIONS")
@@ -491,6 +492,7 @@ class Scanner:
                             routes.extend(self._static_get_routes(js.text))
                     except (URLError, OSError, RuntimeError, ValueError):
                         continue
+            discovered_routes += len(routes)
             for href in routes:
                 try:
                     nxt = self._clean_url(urljoin(response.url, href))
@@ -519,6 +521,16 @@ class Scanner:
                         report.findings.append(confirmed)
                 except (URLError, OSError, RuntimeError, ValueError) as exc:
                     report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
+        if discovered_routes == 0:
+            report.coverage.append(
+                "No navigable links, GET form actions or literal script GET routes were discovered. "
+                "This HTTP-only scanner cannot execute JavaScript or observe live XHR/fetch traffic."
+            )
+        if not candidates:
+            report.coverage.append(
+                "No eligible query or form parameters were found for active injection probes; "
+                "zero findings does not establish that the application is secure."
+            )
         unique = {item.id: item for item in report.findings}
         severity = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         report.findings = sorted(unique.values(), key=lambda f: (severity.get(f.severity, 9), f.url, f.rule, f.parameter, f.id))
@@ -549,6 +561,7 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
         requests_sent=sum(report.requests_sent for report in reports),
         findings=[finding for report in reports for finding in report.findings],
         errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports) for error in report.errors],
+        coverage=[f"{profile}: {note}" for profile, report in zip(profiles, reports) for note in report.coverage],
         profiles=profiles,
         session_source=next((report.session_source for report in reports if report.session_source != "none"), "none"),
     )
