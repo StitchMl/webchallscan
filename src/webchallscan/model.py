@@ -76,6 +76,7 @@ class ScanReport:
     requests_sent: int = 0
     findings: list[Finding] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    coverage: list[str] = field(default_factory=list)
     profiles: tuple[str, ...] = ("desktop",)
     session_source: str = "none"
     schema: str = "webchallscan/v3"
@@ -91,5 +92,6 @@ class ScanReport:
             "requests_sent": self.requests_sent,
             "findings": [item.to_dict() for item in self.findings],
             "errors": [redact_url(value) if "://" in value else value for value in self.errors],
+            "coverage": list(self.coverage),
         }
 
