@@ -56,6 +56,35 @@ case. `--session-file session.json` is also supported for the documented local
 JSON format. Session files contain credentials and should be protected and
 deleted after use.
 
+### Read-only live network inventory (Chrome DevTools)
+
+The cookie-capture extension cannot see live Fetch/XHR requests. To observe
+real browser traffic on an authorized test environment, start a **separate**
+Chrome instance with a dedicated debugging profile (Windows PowerShell):
+
+```powershell
+& "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\\webchallscan-cdp"
+```
+
+Log into your authorized test app in that Chrome window, select its tab,
+then start the inventory from PowerShell:
+
+```powershell
+webchallscan --authorized --cdp http://127.0.0.1:9222 --observe-network 30 --observe-limit 500 > inventory.json
+```
+
+**While the 30-second observation is running**, refresh the target page and
+use its features. The output inventories same-origin URL paths, query
+parameter **names**, HTTP methods, event counts, Chrome resource types and
+response status codes (including POST /graphql). It deliberately never
+records request/response bodies, headers, cookies, or parameter **values**.
+No active probes or POST replays are performed in this mode. It does **not**
+produce vulnerability findings or feed the existing scan engine yet.
+
+Chrome 136+ requires a non-default user-data directory for remote debugging.
+Keep port 9222 bound to loopback and do not use this profile for sensitive
+personal browsing. Do not expose CDP to another device or the internet.
+
 ### Burp Repeater context
 
 Every finding contains a redacted replay block with method, request target,
