@@ -214,43 +214,38 @@ multi-step purchases or transactions. The report excludes tokens, cookies,
 query values and raw response bodies. Keep test credentials out of version
 control and remove the local contract after use.
 
-### Burp Repeater context
+### Burp Repeater procedure
 
 Every finding contains a redacted replay block with method, request target,
 form-field names, browser profile, cookie names, proof payload, expected
-evidence, and a recovery payload only when it is proven. Export one raw HTTP
-request per proof/recovery action:
+evidence, and a recovery payload only when it is proven. Instead of writing
+importable request files, the scanner prints a manual, Community-friendly
+procedure for Burp Repeater:
 
 ```powershell
-webchallscan --authorized --listen-session --active --burp-output .\burp-requests
+webchallscan --authorized --listen-session --active --burp-procedure
 ```
 
-The default files redact query values, hidden fields, CSRF values, and cookies.
-For a local replay that must preserve the live authenticated session, opt in:
+For each reproducible finding it lists the request line and host, which
+parameter to edit and where (query string or request body), the exact proof
+payload and the response evidence that confirms it, and, when proven, the
+recovery payload. Query values, hidden fields, CSRF values, and cookie values
+stay hidden. Work entirely inside Burp Suite Community: capture the request in
+**Proxy > HTTP history**, right-click **Send to Repeater**, edit the named
+parameter to the printed payload, and send.
 
-```powershell
-webchallscan --authorized --listen-session --active `
-  --burp-output .\burp-private --include-session-secrets
-```
-
-The output directory must not already exist. Secret-bearing files are never
-created implicitly; protect and delete them after use.
-
-Burp Suite Community does not need a saved project for Repeater. After an
-initial scan, copy one proof or recovery request directly to the clipboard:
+When a local replay must preserve the live authenticated session, print the
+cookie values too:
 
 ```powershell
 webchallscan --authorized --listen-session --active `
-  --burp-request first-ready --include-session-secrets | Set-Clipboard
+  --burp-procedure --include-session-secrets
 ```
 
-Then use **Paste from clipboard** in Repeater. Omit
-`--include-session-secrets` for a redacted template. Clear the clipboard after
-using a live session request. `first-ready` selects the first proven recovery
-request in stable report order; `first-proof` selects the first validation
-request. A specific `FINDING_ID:proof` or `FINDING_ID:recovery` is also accepted.
+Clear your terminal afterwards; the procedure then contains live session
+cookies.
 
-Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds bounded validation requests within `--max-requests`. It tests every user-controlled form and query field for SQL and Jinja-style template evaluation instead of relying on parameter names. SQL confirmation requires either a new database error or two repeatable tautology/contradiction pairs after reflection removal. Template and command confirmation require a computed result absent from both the request payload and baseline. Sink-oriented names still guide command, path, and redirect probes. Forms retain hidden/default fields and session cookies. Active mode does not submit recovery payloads or extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
+Default mode sends `HEAD`, `OPTIONS`, and bounded `GET` requests. `--active` adds bounded validation requests within `--max-requests`. It tests every user-controlled form and query field for SQL, Jinja-style template evaluation, and reflected HTML/script injection instead of relying on parameter names. SQL confirmation requires either a new database error or two repeatable tautology/contradiction pairs after reflection removal. Template and command confirmation require a computed result absent from both the request payload and baseline. Reflected-XSS confirmation requires an unencoded `<...>` marker in an HTML response that is absent from the baseline. Sink-oriented names still guide command, path, and redirect probes. Forms retain hidden/default fields and session cookies. Active mode does not submit recovery payloads or extract a flag. Review `Evidence`, `Exploit`, and `Flag path` before manually using a proposed recovery vector.
 
 The default `--profile both` runs isolated desktop and mobile scans with separate cookie jars. Fixed browser headers include distinct user agents, `Sec-CH-UA-Mobile`, and platform values. The report tags every finding and summarizes status, body digest/length, form, parameter, and finding differences without printing response bodies. `--max-pages` and `--max-requests` apply to each profile.
 
@@ -260,7 +255,7 @@ Useful controls:
 - `--max-requests 80`: hard request budget, including probes.
 - `--timeout 5`: per-request timeout.
 - `--session-wait 120`: extension capture timeout.
-- `--burp-output DIR`: create raw proof/recovery requests for Burp Repeater.
+- `--burp-procedure`: print a manual Burp Repeater procedure instead of the report.
 - `--insecure`: only for challenge servers with intentionally invalid TLS.
 - `NO_COLOR=1`: disable automatic ANSI color.
 

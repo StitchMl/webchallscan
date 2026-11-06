@@ -1,92 +1,89 @@
 from __future__ import annotations
 
-from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit
 
-from .model import Finding, REDACTED, ScanReport
+from .model import Finding, REDACTED, ScanReport, redact_url
 
 
-def _request(finding: Finding, payload: str, include_secrets: bool) -> str:
-    parsed = urlsplit(finding.url)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    fields = list(finding.request_fields)
+def _parameter_location(finding: Finding) -> str:
     if finding.method == "GET":
-        values = []
-        found = False
-        for name, value in pairs:
-            if name == finding.parameter:
-                values.append((name, payload)); found = True
-            else:
-                values.append((name, value if include_secrets else REDACTED))
-        if finding.parameter and not found:
-            values.append((finding.parameter, payload))
-        path = urlunsplit(("", "", parsed.path or "/", urlencode(values), ""))
-        body = ""
-    else:
-        values = []
-        found = False
-        for name, value in fields:
-            if name == finding.parameter:
-                values.append((name, payload)); found = True
-            else:
-                values.append((name, value if include_secrets else REDACTED))
-        if finding.parameter and not found:
-            values.append((finding.parameter, payload))
-        path = urlunsplit(("", "", parsed.path or "/", parsed.query if include_secrets else urlencode([(n, REDACTED) for n, _ in pairs]), ""))
-        body = urlencode(values)
-    headers = [("Host", parsed.netloc), *finding.client_headers]
-    if finding.session_cookies:
-        cookies = "; ".join(f"{name}={value if include_secrets else REDACTED}" for name, value in finding.session_cookies)
-        headers.append(("Cookie", cookies))
-    if body:
-        headers.extend((("Content-Type", finding.content_type), ("Content-Length", str(len(body.encode())))))
-    return "\r\n".join([f"{finding.method} {path} HTTP/1.1", *(f"{k}: {v}" for k, v in headers), "", body])
+        return "query string"
+    body_names = {name for name, _ in finding.request_fields}
+    if finding.parameter in body_names:
+        return "request body"
+    query_names = {name for name, _ in parse_qsl(urlsplit(finding.url).query, keep_blank_values=True)}
+    if finding.parameter in query_names:
+        return "query string"
+    return "request body"
 
 
-def render_finding_requests(finding: Finding, include_secrets: bool = False) -> tuple[tuple[str, str], ...]:
-    """Return semantic raw HTTP requests suitable for Burp Repeater."""
-    blocks = []
+def _request_line(finding: Finding, include_secrets: bool) -> str:
+    parsed = urlsplit(finding.url)
+    path = parsed.path or "/"
+    if parsed.query:
+        query = parsed.query if include_secrets else "&".join(
+            f"{name}={REDACTED}" for name, _ in parse_qsl(parsed.query, keep_blank_values=True)
+        )
+        path = f"{path}?{query}"
+    return f"{finding.method} {path} HTTP/1.1"
+
+
+def _finding_steps(finding: Finding, include_secrets: bool) -> list[str]:
+    location = _parameter_location(finding)
+    lines = [
+        f"[{finding.id}] {finding.title} ({finding.severity}, {finding.rule})",
+        f"    Request line : {_request_line(finding, include_secrets)}",
+        f"    Host         : {urlsplit(finding.url).netloc}",
+        f"    Parameter    : {finding.parameter or '(none)'}  [{location}]",
+        "    Steps:",
+        "      1. In Burp Proxy > HTTP history, find this request, right-click > Send to Repeater.",
+        f"      2. In the Repeater tab, locate the \"{finding.parameter}\" parameter in the {location}.",
+    ]
+    step = 3
     if finding.proof_payload:
-        blocks.append(("proof", _request(finding, finding.proof_payload, include_secrets) + "\r\n"))
+        lines.append(f"      {step}. Set that parameter's value to the proof payload:")
+        lines.append(f"             {finding.proof_payload}")
+        step += 1
+        evidence = finding.expected_evidence or "the target-specific marker recorded in evidence"
+        lines.append(f"      {step}. Click Send. Confirm the response contains: {evidence}")
+        step += 1
     if finding.exploit_status == "payload-ready" and finding.recovery_payload:
-        blocks.append(("recovery", _request(finding, finding.recovery_payload, include_secrets) + "\r\n"))
-    return tuple(blocks)
+        lines.append(f"      {step}. To reach the flag, set the same parameter to:")
+        lines.append(f"             {finding.recovery_payload}")
+        step += 1
+        lines.append(f"      {step}. Click Send and read the response for the flag.")
+        step += 1
+    if finding.session_cookies:
+        names = ", ".join(sorted({name for name, _ in finding.session_cookies}))
+        if include_secrets:
+            cookie = "; ".join(f"{name}={value}" for name, value in finding.session_cookies)
+            lines.append(f"      {step}. Keep the Cookie header set to: {cookie}")
+        else:
+            lines.append(
+                f"      {step}. Keep the authenticated Cookie header (names: {names}); "
+                "re-run with --include-session-secrets to print the values."
+            )
+    return lines
 
 
-def write_burp_output(report: ScanReport, destination: str, include_secrets: bool = False) -> tuple[Path, ...]:
-    target = Path(destination)
-    findings = [finding for finding in report.findings if finding.proof_payload or finding.recovery_payload]
+def render_burp_procedure(report: ScanReport, include_secrets: bool = False) -> str:
+    """Return a manual, copy-free Burp Repeater procedure (Community-friendly).
+
+    No files are written and nothing is auto-imported. Each reproducible finding
+    becomes numbered steps: which request to send to Repeater, which parameter to
+    edit, the exact payload, and the response evidence that confirms it.
+    """
+    findings = [f for f in report.findings if f.proof_payload or f.recovery_payload]
+    header = [
+        "Burp Repeater procedure (Community edition)",
+        f"Target                 : {report.target if include_secrets else redact_url(report.target)}",
+        f"Reproducible findings  : {len(findings)}",
+        "",
+    ]
     if not findings:
-        raise ValueError("no replayable proof or recovery requests were produced")
-    target.mkdir(parents=True, exist_ok=False)
-    written = []
-    index = 0
+        header.append("No finding produced a proof or recovery payload, so there is nothing to replay.")
+        return "\n".join(header)
+    blocks = []
     for finding in findings:
-        for kind, request in render_finding_requests(finding, include_secrets):
-            index += 1
-            path = target / f"{index:03d}-{finding.id}-{kind}.http"
-            with path.open("x", encoding="utf-8", newline="") as stream:
-                stream.write(request)
-            written.append(path)
-    return tuple(written)
-
-
-def select_burp_request(report: ScanReport, selector: str, include_secrets: bool = False) -> str:
-    identity, separator, kind = selector.partition(":")
-    if not identity or (separator and kind not in {"proof", "recovery"}):
-        raise ValueError("--burp-request must select a finding and optional proof/recovery kind")
-    if identity == "first-ready":
-        finding = next((item for item in report.findings if item.exploit_status == "payload-ready" and item.recovery_payload), None)
-        kind = kind or "recovery"
-    elif identity == "first-proof":
-        finding = next((item for item in report.findings if item.proof_payload), None)
-        kind = kind or "proof"
-    else:
-        finding = next((item for item in report.findings if item.id == identity), None)
-    if finding is None:
-        raise ValueError("--burp-request selector matched no request in this scan")
-    requests = dict(render_finding_requests(finding, include_secrets))
-    selected_kind = kind or ("recovery" if "recovery" in requests else "proof")
-    if selected_kind not in requests:
-        raise ValueError(f"finding {identity} has no {selected_kind} request")
-    return requests[selected_kind]
+        blocks.append("\n".join(_finding_steps(finding, include_secrets)))
+    return "\n".join(header) + "\n\n".join(blocks) + "\n"

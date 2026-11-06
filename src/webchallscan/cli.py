@@ -14,7 +14,7 @@ from .network import observe_cdp
 from .planner import load_inventory, plan_inventory
 from . import __version__
 from .report import render_json, render_text
-from .replay import select_burp_request, write_burp_output
+from .replay import render_burp_procedure
 from .scanner import scan_profiles
 from .session import BrowserSession, SessionCaptureError, capture_cdp_session, discover_cdp, listen_for_extension, load_session_file
 
@@ -40,12 +40,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
-    burp = p.add_mutually_exclusive_group()
-    burp.add_argument("--burp-output", metavar="DIR", help="create a directory of raw Burp Repeater proof/recovery requests")
-    burp.add_argument("--burp-request", metavar="ID[:KIND]",
-                      help="print one raw request; accepts an ID, first-proof, or first-ready")
+    p.add_argument("--burp-procedure", action="store_true",
+                   help="print a manual Burp Repeater procedure for each reproducible finding instead of the report")
     p.add_argument("--include-session-secrets", action="store_true",
-                   help="include cookies and hidden values in Burp output/request only")
+                   help="print cookie values in the Burp procedure instead of hiding them")
     p.add_argument("--max-pages", type=int, default=20)
     p.add_argument("--max-requests", type=int, default=80)
     p.add_argument("--timeout", type=float, default=5.0)
@@ -152,8 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.authorized:
         print("error: --authorized is required; scan only targets you are permitted to test", file=sys.stderr)
         return 2
-    if args.include_session_secrets and not (args.burp_output or args.burp_request):
-        print("error: --include-session-secrets requires --burp-output or --burp-request", file=sys.stderr)
+    if args.include_session_secrets and not args.burp_procedure:
+        print("error: --include-session-secrets requires --burp-procedure", file=sys.stderr)
         return 2
     try:
         captured = None
@@ -195,15 +193,11 @@ def main(argv: list[str] | None = None) -> int:
                                max_pages=args.max_pages, max_requests=args.max_requests,
                                timeout=args.timeout, verify_tls=not args.insecure,
                                sessions=sessions)
-        if args.burp_output:
+        if args.burp_procedure:
             if args.include_session_secrets:
-                print("warning: replay files will contain live session secrets; protect and delete them after use", file=sys.stderr)
-            write_burp_output(report, args.burp_output, args.include_session_secrets)
-        if args.burp_request:
-            if args.include_session_secrets:
-                print("warning: raw request contains live session secrets; clear the clipboard after use", file=sys.stderr)
-            sys.stdout.write(select_burp_request(report, args.burp_request, args.include_session_secrets))
-            return 0
+                print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
+            print(render_burp_procedure(report, args.include_session_secrets))
+            return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
     except (ValueError, SessionCaptureError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

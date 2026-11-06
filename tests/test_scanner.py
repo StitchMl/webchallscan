@@ -148,6 +148,23 @@ def test_ssti_requires_a_server_computed_result(server):
                    for f in reflected.findings)
 
 
+def test_reflected_xss_confirmed_on_unencoded_reflection(server):
+    report = Scanner(server + "/template?message=hello", active=True, max_pages=1,
+                     max_requests=20).scan()
+    xss = [f for f in report.findings if f.rule == "WEB-XSS-001"
+           and f.title == "Reflected HTML/script injection confirmed"]
+    assert xss and xss[0].severity == "high" and xss[0].confidence == "high"
+    assert xss[0].parameter == "message"
+
+
+def test_html_escaped_reflection_is_not_xss(server):
+    report = Scanner(server + "/escaped?x7=hello", active=True, max_pages=1,
+                     max_requests=12).scan()
+    assert not any(f.rule == "WEB-XSS-001"
+                   and f.title == "Reflected HTML/script injection confirmed"
+                   for f in report.findings)
+
+
 def test_rejects_cross_origin_and_non_http(server):
     scanner = Scanner(server)
     assert not scanner._in_scope("http://example.invalid/")

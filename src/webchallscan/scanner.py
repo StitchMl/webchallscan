@@ -19,6 +19,7 @@ CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
 CMD_RESULT = "WCSA7340WCSZ"
 SSTI_PROBE = "{{7340*3}}"
 SSTI_RESULT = "22020"
+XSS_PROBE = "<wcs7340>"
 MAX_BODY = 1_000_000
 SQL_ERRORS = (
     "sql syntax", "sqlite error", "sqlite3.", "mysql_fetch", "mysqli_sql_exception",
@@ -282,6 +283,9 @@ class Scanner:
         if generic:
             rules.append(("WEB-SSTI-001", "Possible server-side template injection input", SSTI_PROBE,
                           "Treat templates as code: select fixed templates and pass user data only as values."))
+        if generic or re.search(r"(?:^|_)(?:q|query|search|name|msg|message|comment|text|input|keyword)(?:$|_)", key):
+            rules.append(("WEB-XSS-001", "Possible reflected cross-site scripting input", XSS_PROBE,
+                          "Context-encode output (HTML entity/attribute/JS) and set a restrictive Content-Security-Policy."))
         if re.search(r"(?:^|_)(?:cmd|command|exec|host|ip|ping)(?:$|_)", key):
             rules.append(("WEB-CMDI-001", "Possible command injection input", CMD_PROBE, "Avoid shell invocation; use fixed argument arrays and strict allowlists."))
         if re.search(r"(?:^|_)(?:file|path|page|include|template|view)(?:$|_)", key):
@@ -295,6 +299,7 @@ class Scanner:
             expected_evidence=("database error or stable boolean response differential" if rule == "WEB-SQLI-001" else
                                SSTI_RESULT if rule == "WEB-SSTI-001" else
                                CMD_RESULT if rule == "WEB-CMDI-001" else
+                               f"unencoded reflection of {XSS_PROBE}" if rule == "WEB-XSS-001" else
                                "status/body differential")) for rule, title, payload, patch in rules]
 
     @staticmethod
@@ -325,6 +330,8 @@ class Scanner:
             probe = "../WCS_NONEXISTENT_7f31a9"
         elif finding.rule == "WEB-REDIR-001":
             probe = "https://example.invalid/wcs"
+        elif finding.rule == "WEB-XSS-001":
+            probe = XSS_PROBE
         def send(value: str) -> Response:
             fields = dict(finding.request_fields)
             fields[finding.parameter] = value
@@ -422,6 +429,17 @@ class Scanner:
                 vector=f"Set {finding.parameter}=../WCS_NONEXISTENT_7f31a9 to reproduce the differential.", patch=finding.patch,
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence=f"HTTP status differs from baseline {baseline.status}")
+        if finding.rule == "WEB-XSS-001" and XSS_PROBE in tested.text and XSS_PROBE not in baseline.text:
+            ctype = tested.headers.get("content-type", "").lower()
+            if "html" in ctype or "<html" in tested.text[:500].lower():
+                return self._finding(rule=finding.rule, title="Reflected HTML/script injection confirmed", severity="high", confidence="high",
+                    url=finding.url, parameter=finding.parameter,
+                    evidence=f"The marker {XSS_PROBE} is reflected unencoded in an HTML response and is absent from the baseline, so '<' and '>' are not entity-encoded.",
+                    vector=f"Proof: {method} {redact_url(finding.url)} with {finding.parameter}={XSS_PROBE!r}. Escalate manually to a script payload within the reflection context.",
+                    patch=finding.patch,
+                    flag_path="Unencoded reflection is proven. A working XSS payload depends on the surrounding HTML/JS context and is not injected automatically.",
+                    method=method, request_fields=finding.request_fields, proof_payload=probe,
+                    expected_evidence=f"unencoded {XSS_PROBE} absent from baseline")
         return None
 
     @staticmethod
@@ -476,7 +494,7 @@ class Scanner:
             self.observations[response.url] = self._observe(response, parser)
             items = self._passive_findings(response, parser)
             report.findings.extend(items)
-            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001"})
+            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001", "WEB-XSS-001"})
             # Examine inline scripts and bounded same-origin JavaScript files for
             # literal GET routes. Never execute JavaScript or issue inferred POSTs.
             routes = list(parser.links)
@@ -510,6 +528,7 @@ class Scanner:
                 "WEB-SQLI-001": 2,
                 "WEB-FILE-001": 3,
                 "WEB-REDIR-001": 4,
+                "WEB-XSS-001": 5,
             }
             for finding in sorted(candidates, key=lambda item: (
                     probe_priority.get(item.rule, 9), item.url, item.parameter, item.id)):

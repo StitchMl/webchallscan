@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from webchallscan.model import Finding, ScanReport
-from webchallscan.replay import select_burp_request, write_burp_output
+from webchallscan.replay import render_burp_procedure
 from webchallscan.report import render_json, render_text
 
 
@@ -42,37 +40,37 @@ def test_reports_redact_query_hidden_fields_and_cookie_values():
     assert decoded["findings"][0]["replay"]["body"][0]["value"] == "[REDACTED]"
 
 
-def test_burp_export_is_raw_exclusive_and_secret_opt_in(tmp_path):
-    report = ScanReport("https://challenge.example/run", True, findings=[ready_finding()])
-    redacted_dir = tmp_path / "redacted"
-    files = write_burp_output(report, str(redacted_dir), include_secrets=False)
-    assert [path.name.rsplit("-", 1)[-1] for path in files] == ["proof.http", "recovery.http"]
-    redacted = "\n".join(path.read_text(encoding="utf-8") for path in files)
-    assert redacted.startswith("POST /run?token=%5BREDACTED%5D HTTP/1.1")
-    assert "secret-cookie" not in redacted and "secret-csrf" not in redacted
-    assert "###" not in redacted
-
-    secret_dir = tmp_path / "with-secrets"
-    secret = "\n".join(path.read_text(encoding="utf-8") for path in write_burp_output(
-        report, str(secret_dir), include_secrets=True,
-    ))
-    assert "session=secret-cookie" in secret
-    assert "csrf=secret-csrf" in secret
-    assert "token=secret-query" in secret
-
-    with pytest.raises(FileExistsError):
-        write_burp_output(report, str(secret_dir), include_secrets=True)
+def test_burp_procedure_hides_secrets_but_shows_payloads_by_default():
+    report = ScanReport("https://challenge.example/run?token=secret-query", True, findings=[ready_finding()])
+    text = render_burp_procedure(report, include_secrets=False)
+    # The procedure is human steps, not an importable request file.
+    assert "Burp Repeater procedure" in text
+    assert "Send to Repeater" in text
+    # Payloads are the attack input, so they are always shown.
+    assert ";printf PROOF" in text
+    assert ";cat /flag" in text
+    assert "PROOF" in text  # expected evidence
+    assert 'the "cmd" parameter' in text
+    assert "request body" in text
+    # Secrets stay hidden unless explicitly requested.
+    assert "secret-query" not in text
+    assert "secret-csrf" not in text
+    assert "secret-cookie" not in text
+    assert "--include-session-secrets" in text
 
 
-def test_single_burp_community_request_is_clean_stdout_payload():
-    finding = ready_finding()
-    report = ScanReport("https://challenge.example/run", True, findings=[finding])
-    raw = select_burp_request(report, finding.id + ":recovery", include_secrets=True)
-    assert raw.startswith("POST /run?token=secret-query HTTP/1.1\r\n")
-    assert "cmd=%3Bcat+%2Fflag" in raw
-    assert "###" not in raw
-    with pytest.raises(ValueError):
-        select_burp_request(report, finding.id + ":missing")
-    assert select_burp_request(report, "first-ready", include_secrets=True) == raw
-    assert "cmd=%3Bprintf+PROOF" in select_burp_request(report, "first-proof")
+def test_burp_procedure_reveals_cookie_values_when_opted_in():
+    report = ScanReport("https://challenge.example/run?token=secret-query", True, findings=[ready_finding()])
+    text = render_burp_procedure(report, include_secrets=True)
+    assert "session=secret-cookie" in text
+    assert "token=secret-query" in text
 
+
+def test_burp_procedure_reports_when_nothing_is_reproducible():
+    finding = Finding(
+        rule="WEB-INFO-001", title="Passive match", severity="low", confidence="low",
+        url="https://challenge.example/", parameter="q",
+    )
+    report = ScanReport("https://challenge.example/", True, findings=[finding])
+    text = render_burp_procedure(report)
+    assert "nothing to replay" in text

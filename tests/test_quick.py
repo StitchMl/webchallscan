@@ -5,6 +5,7 @@ from webchallscan import cli
 
 def test_quick_mode_needs_no_manual_contract(monkeypatch, capsys):
     observed = {
+        "schema": "webchallscan/network-inventory-v1",
         "origin": "https://challenge.example",
         "observed_requests": 1,
         "endpoints": [{"method": "GET", "path": "/api", "parameters": ["q"],
