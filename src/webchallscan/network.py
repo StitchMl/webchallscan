@@ -4,11 +4,16 @@ from __future__ import annotations
 import json
 import socket
 import time
-from collections import Counter
 from urllib.parse import parse_qsl, urlsplit
 
 from .posture import inspect_response
-from .session import _CDP, _json_get, _loopback_url, _valid_http_url, SessionCaptureError
+from .session import (
+    _CDP,
+    SessionCaptureError,
+    _json_get,
+    _loopback_url,
+    _valid_http_url,
+)
 
 
 def _safe_request(method: object, url: object, origin: tuple[str, str]) -> dict[str, object] | None:
@@ -45,7 +50,7 @@ def observe_cdp(endpoint: str, seconds: float = 20.0, limit: int = 500) -> dict[
         if not isinstance(item, dict) or item.get("type") != "page":
             continue
         try:
-            url = _valid_http_url(item.get("url"))
+            _valid_http_url(item.get("url"))
             client = _CDP(str(item["webSocketDebuggerUrl"]), 2.0)
             try:
                 state = client.call("Runtime.evaluate", {

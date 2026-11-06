@@ -1,4 +1,5 @@
 import pytest
+
 from webchallscan.api_contract import validate_contract
 
 

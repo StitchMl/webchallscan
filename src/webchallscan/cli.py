@@ -5,18 +5,25 @@ import json
 import site
 import sys
 import sysconfig
-from urllib.error import URLError
 from pathlib import Path
+from urllib.error import URLError
 
+from . import __version__
 from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
 from .network import observe_cdp
 from .planner import load_inventory, plan_inventory
-from . import __version__
-from .report import render_json, render_text
 from .replay import render_burp_procedure
+from .report import render_json, render_text
 from .scanner import scan_profiles
-from .session import BrowserSession, SessionCaptureError, capture_cdp_session, discover_cdp, listen_for_extension, load_session_file
+from .session import (
+    BrowserSession,
+    SessionCaptureError,
+    capture_cdp_session,
+    discover_cdp,
+    listen_for_extension,
+    load_session_file,
+)
 
 
 def parser() -> argparse.ArgumentParser:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import contextlib
 import io
+import json
 import queue
 import threading
 import time
@@ -10,7 +10,12 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from webchallscan.session import SessionCaptureError, listen_for_extension, load_session_file, parse_extension_session
+from webchallscan.session import (
+    SessionCaptureError,
+    listen_for_extension,
+    load_session_file,
+    parse_extension_session,
+)
 
 
 def extension_payload(url="https://challenge.example/account?token=secret-query"):

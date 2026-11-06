@@ -5,6 +5,7 @@ are retained; all signals are configuration observations, not exploit proofs.
 """
 from __future__ import annotations
 
+
 def inspect_response(method: str, path: str, resource_type: str,
                      status: int, headers: dict[str, str],
                      secure_origin: bool) -> list[dict[str, str]]:

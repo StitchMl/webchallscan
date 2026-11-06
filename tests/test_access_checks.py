@@ -1,4 +1,5 @@
 import pytest
+
 from webchallscan import access_checks
 
 

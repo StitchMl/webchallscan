@@ -8,7 +8,13 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from webchallscan.scanner import (
-    CMD_PROBE, CMD_RESULT, PROFILES, SSTI_PROBE, SSTI_RESULT, Scanner, scan_profiles,
+    CMD_PROBE,
+    CMD_RESULT,
+    PROFILES,
+    SSTI_PROBE,
+    SSTI_RESULT,
+    Scanner,
+    scan_profiles,
 )
 
 
@@ -213,7 +219,7 @@ def test_fixed_profile_headers_and_isolated_cookie_jars(server):
 
 
 def test_both_profiles_find_distinct_surfaces_and_are_deterministic(server):
-    kwargs = dict(profiles=("desktop", "mobile"), active=True, max_pages=1, max_requests=12)
+    kwargs = {"profiles": ("desktop", "mobile"), "active": True, "max_pages": 1, "max_requests": 12}
     first = scan_profiles(server + "/profiles", **kwargs)
     second = scan_profiles(server + "/profiles", **kwargs)
     assert first.to_dict() == second.to_dict()

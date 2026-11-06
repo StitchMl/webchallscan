@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
-import json
 import ipaddress
+import json
 import os
 import secrets
 import socket
@@ -12,12 +13,11 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
-
 
 SAFE_HEADERS = {"user-agent", "accept-language"}
 COMMON_CDP_ENDPOINTS = {
@@ -157,10 +157,8 @@ class _WebSocket:
         self.sock.sendall(bytes([0x80 | opcode, 0x80 | len(data)]) + mask + encoded)
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(OSError):
             self.sock.close()
-        except OSError:
-            pass
 
 
 class _CDP:
@@ -311,7 +309,7 @@ def listen_for_extension(timeout: float = 120.0) -> BrowserSession:
     state: dict[str, BrowserSession] = {}
 
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             if self.path != "/v1/session/import" or self.headers.get("X-Webchallscan-Token") != token:
                 self.send_error(403); return
             if self.headers.get_content_type() != "application/json":

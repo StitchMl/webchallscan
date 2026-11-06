@@ -3,14 +3,20 @@ from __future__ import annotations
 import re
 import ssl
 from collections import deque
-from hashlib import sha256
-from http.cookiejar import Cookie, CookieJar
 from dataclasses import dataclass, field
+from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
+from http.cookiejar import Cookie, CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, HTTPCookieProcessor, HTTPSHandler, Request, build_opener
+from urllib.request import (
+    HTTPCookieProcessor,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    Request,
+    build_opener,
+)
 
 from .model import Finding, ScanReport, redact_url
 from .session import BrowserSession
@@ -211,7 +217,7 @@ class Scanner:
             (form.method, form.action, tuple(sorted(name for name, _, _ in form.inputs)))
             for form in parser.forms
         ))
-        parameters = set(name for form in parser.forms for name, _, _ in form.inputs)
+        parameters = {name for form in parser.forms for name, _, _ in form.inputs}
         parameters.update(name for name, _ in parse_qsl(urlsplit(response.url).query, keep_blank_values=True))
         encoded = response.text.encode("utf-8", "replace")
         return PageObservation(
@@ -252,7 +258,7 @@ class Scanner:
                 flag_path="The value may be a decoy, example, or real flag. Passive text alone cannot distinguish them.",
                 patch="Remove secrets from public responses and enforce authorization at the data boundary."))
         for form in parser.forms:
-            names = [name for name, _, _ in form.inputs]
+            [name for name, _, _ in form.inputs]
             defaults = tuple((name, value) for name, input_type, value in form.inputs
                              if input_type not in {"submit", "button", "image", "reset", "file"})
             action = self._clean_url(urljoin(response.url, form.action or response.url))
@@ -474,7 +480,7 @@ class Scanner:
         try:
             self._request(self.target, "HEAD")
             self._request(self.target, "OPTIONS")
-        except (URLError, OSError, RuntimeError, ValueError) as exc:
+        except (URLError, OSError, RuntimeError, ValueError):
             report.errors.append("metadata request failed")
         while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
             url = queue.popleft()
@@ -483,7 +489,7 @@ class Scanner:
             seen.add(url)
             try:
                 response = self._request(url)
-            except (URLError, OSError, RuntimeError, ValueError) as exc:
+            except (URLError, OSError, RuntimeError, ValueError):
                 report.errors.append(f"{redact_url(url)}: request failed")
                 continue
             successful_pages += 1
@@ -538,7 +544,7 @@ class Scanner:
                     confirmed = self._active_probe(finding)
                     if confirmed:
                         report.findings.append(confirmed)
-                except (URLError, OSError, RuntimeError, ValueError) as exc:
+                except (URLError, OSError, RuntimeError, ValueError):
                     report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
         if discovered_routes == 0:
             report.coverage.append(
@@ -579,8 +585,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
         pages_scanned=sum(report.pages_scanned for report in reports),
         requests_sent=sum(report.requests_sent for report in reports),
         findings=[finding for report in reports for finding in report.findings],
-        errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports) for error in report.errors],
-        coverage=[f"{profile}: {note}" for profile, report in zip(profiles, reports) for note in report.coverage],
+        errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports, strict=False) for error in report.errors],
+        coverage=[f"{profile}: {note}" for profile, report in zip(profiles, reports, strict=False) for note in report.coverage],
         profiles=profiles,
         session_source=next((report.session_source for report in reports if report.session_source != "none"), "none"),
     )

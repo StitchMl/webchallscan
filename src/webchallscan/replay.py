@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import parse_qsl, urlsplit
 
-from .model import Finding, REDACTED, ScanReport, redact_url
+from .model import REDACTED, Finding, ScanReport, redact_url
 
 
 def _parameter_location(finding: Finding) -> str:

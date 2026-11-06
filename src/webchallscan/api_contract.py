@@ -11,9 +11,10 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.error import HTTPError
+from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):

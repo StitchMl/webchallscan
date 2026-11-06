@@ -8,9 +8,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 class _NoRedirect(HTTPRedirectHandler):
