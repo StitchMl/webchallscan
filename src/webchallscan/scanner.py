@@ -138,7 +138,7 @@ class Scanner:
         self.session = session
         self.requests_sent = 0
         self.observations: dict[str, PageObservation] = {}
-        context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
+        context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # NOSONAR: unverified TLS only on opt-in --insecure for CTF targets; default verifies
         self.cookies = CookieJar()
         if session:
             self._import_session_cookies(session)

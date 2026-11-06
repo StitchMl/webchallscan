@@ -70,7 +70,7 @@ def load_inventory(path: str) -> dict:
     file = Path(path)
     if file.stat().st_size > 5_000_000:
         raise ValueError("inventory too large")
-    raw = json.loads(file.read_text(encoding="utf-8"))
+    raw = json.loads(file.read_text(encoding="utf-8"))  # NOSONAR: reads a local inventory file the user passes on the CLI
     if not isinstance(raw, dict):
         raise ValueError("inventory must be a JSON object")
     return raw

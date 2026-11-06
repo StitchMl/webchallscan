@@ -94,7 +94,7 @@ class _WebSocket:
         if not response.startswith(b"HTTP/1.1 101"):
             self.close()
             raise SessionCaptureError("CDP WebSocket upgrade was rejected")
-        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())
+        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())  # NOSONAR: RFC 6455 WebSocket handshake mandates SHA-1 with this fixed GUID
         if expected.lower() not in response.lower():
             self.close()
             raise SessionCaptureError("CDP WebSocket handshake validation failed")
@@ -229,7 +229,7 @@ def load_session_file(path: str) -> BrowserSession:
     try:
         if file.stat().st_size > 2_000_000:
             raise SessionCaptureError("session file exceeds 2 MB")
-        data = json.loads(file.read_text(encoding="utf-8"))
+        data = json.loads(file.read_text(encoding="utf-8"))  # NOSONAR: reads a local session file the user passes on the CLI
     except (OSError, json.JSONDecodeError) as exc:
         raise SessionCaptureError("cannot read a valid session JSON file") from exc
     if isinstance(data, dict) and data.get("schema") == "webchallscan/browser-session-v1":

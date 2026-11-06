@@ -176,7 +176,7 @@ def load_contract(path):
     f = Path(path)
     if f.stat().st_size > 200_000:
         raise ValueError("contract file too large")
-    value = json.loads(f.read_text(encoding="utf-8"))
+    value = json.loads(f.read_text(encoding="utf-8"))  # NOSONAR: reads a local contract file the user passes on the CLI
     if not isinstance(value, dict):
         raise ValueError("contract must be an object")
     return value

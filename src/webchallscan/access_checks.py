@@ -19,7 +19,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _digest_response(url: str, headers: dict[str, str], timeout: float) -> dict:
-    req = Request(url, method="GET", headers={**headers, "Accept": "application/json, text/plain, */*"})
+    req = Request(url, method="GET", headers={**headers, "Accept": "application/json, text/plain, */*"})  # NOSONAR: authorized black-box request to the user-specified target
     try:
         with build_opener(_NoRedirect).open(req, timeout=timeout) as res:
             raw = res.read(65537)
@@ -89,7 +89,7 @@ def load_cases(path: str) -> dict:
     f = Path(path)
     if f.stat().st_size > 500_000:
         raise ValueError("case file too large")
-    data = json.loads(f.read_text(encoding="utf-8"))
+    data = json.loads(f.read_text(encoding="utf-8"))  # NOSONAR: reads a local cases file the user passes on the CLI
     if not isinstance(data, dict):
         raise ValueError("case file must contain an object")
     return data
