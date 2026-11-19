@@ -74,3 +74,44 @@ def test_burp_procedure_reports_when_nothing_is_reproducible():
     report = ScanReport("https://challenge.example/", True, findings=[finding])
     text = render_burp_procedure(report)
     assert "nothing to replay" in text
+
+
+def test_raw_repeater_template_redacts_fields_and_sets_correct_body_length():
+    from webchallscan.replay import _raw_http_template
+
+    text = _raw_http_template(ready_finding(), include_secrets=False)
+    head, body = text.split("\r\n\r\n", 1)
+    assert "POST /run?token=%5BREDACTED%5D HTTP/1.1" in head
+    assert "Host: challenge.example" in head
+    assert "Cookie: session=[REDACTED]" in head
+    assert "User-Agent: Browser/1.0" in head
+    assert "csrf=%5BREDACTED%5D" in body
+    assert "cmd=%3Bprintf+PROOF" in body
+    assert f"Content-Length: {len(body.encode('utf-8'))}" in head
+    assert "secret-query" not in text
+    assert "secret-csrf" not in text
+    assert "secret-cookie" not in text
+
+
+def test_raw_get_template_mutates_only_probe_parameter():
+    from webchallscan.replay import _raw_http_template
+
+    finding = Finding(
+        rule="WEB-SSTI-001", title="Template evaluation",
+        severity="high", confidence="high",
+        url="https://challenge.example/search?token=PRIVATE&q=old",
+        parameter="q", method="GET", proof_payload="{{7340*3}}",
+    )
+    text = _raw_http_template(finding, False)
+    assert "GET /search?token=%5BREDACTED%5D&q=%7B%7B7340%2A3%7D%7D HTTP/1.1" in text
+    assert "PRIVATE" not in text
+    assert "Content-Length:" not in text
+
+
+def test_raw_request_is_opt_in_and_never_dumps_hidden_fields():
+    report = ScanReport("https://challenge.example/", True, findings=[ready_finding()])
+    assert "Raw HTTP request template" not in render_burp_procedure(report)
+    text = render_burp_procedure(report, include_secrets=True, raw_http=True)
+    assert "Raw HTTP request template" in text
+    assert "Cookie: session=secret-cookie" in text
+    assert "secret-csrf" not in text
