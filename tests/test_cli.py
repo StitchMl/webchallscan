@@ -31,3 +31,19 @@ def test_cli_defaults_to_both_profiles(monkeypatch, capsys):
     assert captured["profiles"] == ("desktop", "mobile")
     assert "Profiles: desktop,mobile" in capsys.readouterr().out
 
+
+def test_proxy_is_forwarded_to_scanner_without_changing_defaults(monkeypatch, capsys):
+    captured = {}
+    def fake_scan(*args, **kwargs):
+        captured.update(kwargs)
+        return ScanReport("http://127.0.0.1/", False, pages_scanned=1)
+    monkeypatch.setattr("webchallscan.cli.scan_profiles", fake_scan)
+    assert main(["http://127.0.0.1/", "--authorized", "--proxy",
+                 "http://127.0.0.1:8080"]) == 0
+    assert captured["proxy"] == "http://127.0.0.1:8080"
+
+
+def test_proxy_is_rejected_for_contract_mode(capsys):
+    assert main(["--authorized", "--validate-api-contract", "not-used.json",
+                 "--proxy", "http://127.0.0.1:8080"]) == 2
+    assert "scanner mode" in capsys.readouterr().err
