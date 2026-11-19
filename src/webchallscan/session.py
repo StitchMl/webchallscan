@@ -10,6 +10,7 @@ import re
 import secrets
 import socket
 import ssl
+import stat
 import struct
 import sys
 import time
@@ -326,12 +327,19 @@ def _safe_headers(value: object) -> tuple[tuple[str, str], ...]:
 
 
 def load_session_file(path: str) -> BrowserSession:
-    file = Path(path)
+    # The caller explicitly chooses the local file, which may be outside
+    # the workspace. Limit bytes read and reject symlinks/non-regular files.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if file.stat().st_size > 2_000_000:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise SessionCaptureError("session input must be a regular file")
+            raw = stream.read(2_000_001)
+        if len(raw) > 2_000_000:
             raise SessionCaptureError("session file exceeds 2 MB")
-        data = json.loads(file.read_text(encoding="utf-8"))  # NOSONAR: reads a local session file the user passes on the CLI
-    except (OSError, json.JSONDecodeError) as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SessionCaptureError("cannot read a valid session JSON file") from exc
     if isinstance(data, dict) and data.get("schema") == "webchallscan/browser-session-v1":
         return parse_extension_session(data, "session-file")
