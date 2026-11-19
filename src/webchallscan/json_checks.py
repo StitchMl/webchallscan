@@ -63,13 +63,13 @@ def _signature(result: dict, values: list[str]) -> tuple[int, str]:
     return (result["status"], sha256(payload.encode("utf-8")).hexdigest())
 
 
-def run_json_cases(data: dict, *, timeout: float = 5.0,
-                   verify_tls: bool = True, proxy: str | None = None, send=None) -> dict:
-    from .http_client import validate_loopback_proxy
-    validate_loopback_proxy(proxy)
-    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
-        raise ValueError("unsupported JSON case schema")
-    origin = data.get("origin")
+_HEADER_NAMES = frozenset({
+    "authorization", "cookie", "x-api-key", "x-csrf-token",
+    "x-xsrf-token", "x-csrftoken",
+})
+
+
+def _validate_origin(origin: object) -> str:
     if not isinstance(origin, str):
         raise ValueError("missing JSON case origin")
     parsed = urlsplit(origin)
@@ -77,54 +77,118 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
             or parsed.username or parsed.password or parsed.path or parsed.query
             or parsed.fragment):
         raise ValueError("origin must be an exact HTTP(S) origin")
+    return origin
+
+
+def _validate_headers(headers: object) -> None:
+    if not isinstance(headers, dict) or any(
+        not isinstance(k, str) or k.lower() not in _HEADER_NAMES
+        or not isinstance(v, str) or len(v) > 4096
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in v)
+        for k, v in headers.items()
+    ):
+        raise ValueError("JSON case headers may contain authentication and CSRF tokens only")
+
+
+def _validate_target_field(body: dict, field: list) -> None:
+    cursor = body
+    try:
+        for name in field[:-1]:
+            cursor = cursor[name]
+            if not isinstance(cursor, dict):
+                raise ValueError("JSON field parent is not an object")
+        original = cursor[field[-1]]
+    except (KeyError, TypeError) as exc:
+        raise ValueError("field must exist in the supplied body") from exc
+    if not isinstance(original, str):
+        raise ValueError("target field must be a string for baseline comparison")
+
+
+def _prepare_case(item: object) -> tuple:
+    if not isinstance(item, dict) or set(item) != {
+        "path", "kind", "body", "field", "headers",
+    }:
+        raise ValueError("JSON case must define path/kind/body/field/headers")
+    path, kind, body, field, headers = (item[key] for key in (
+        "path", "kind", "body", "field", "headers"))
+    if (not isinstance(path, str) or not path.startswith("/") or path.startswith("//")
+            or any(c in path for c in ("?", "#", "\\", "\r", "\n"))
+            or "%" in path or ".." in path):
+        raise ValueError("JSON case path must be a literal same-origin path")
+    if kind not in {"ssti", "nosql"}:
+        raise ValueError("JSON case kind must be ssti or nosql")
+    if not isinstance(body, dict) or not isinstance(field, list) or not 1 <= len(field) <= 8:
+        raise ValueError("JSON case requires object body and field name path")
+    if not all(isinstance(name, str) and FIELDS.fullmatch(name) for name in field):
+        raise ValueError("invalid JSON field names")
+    _validate_headers(headers)
+    _validate_target_field(body, field)
+    if len(json.dumps(body, ensure_ascii=True)) > MAX_BODY:
+        raise ValueError("JSON body exceeds input cap")
+    return path, kind, body, field, headers
+
+
+def _collect_samples(client, origin: str, path: str, body: dict, field: list,
+                     headers: dict, timeout: float, probes: list[str]) -> list[dict]:
+    samples = []
+    for value in probes:
+        mutated = _field_body(body, field, value)
+        # Check size before sending, including oversized replacement.
+        if len(json.dumps(mutated).encode("utf-8")) > MAX_BODY:
+            raise ValueError("JSON probe exceeds request size limit")
+        result = client(origin + path, mutated, headers, timeout)
+        if not isinstance(result, dict) or not {
+            "status", "digest", "body",
+        }.issubset(result):
+            raise ValueError("invalid JSON test response")
+        samples.append(result)
+    return samples
+
+
+def _ssti_finding(samples: list[dict], number: int) -> dict | None:
+    baseline, first, second = samples
+    if (b"22020" in first["body"] and b"22020" in second["body"]
+            and b"22020" not in baseline["body"]
+            and first["status"] == second["status"]
+            and first["digest"] == second["digest"]
+            and b"22020" not in PROBE_SSTI.encode()):
+        return {
+            "rule": "API-JSON-SSTI-REVIEW", "case": number, "severity": "medium",
+            "confidence": "medium", "status": "manual-validation-required",
+            "evidence": "Repeated JSON arithmetic probe produced computed marker absent from baseline.",
+        }
+    return None
+
+
+def _nosql_finding(samples: list[dict], number: int) -> dict | None:
+    first, second, probe_a, probe_b = samples
+    scalar = _signature(first, ["WCSBASE"])
+    object_probe = _signature(probe_a, ["WCS_NONMATCH_7340"])
+    if (scalar == _signature(second, ["WCSBASE"])
+            and object_probe == _signature(probe_b, ["WCS_NONMATCH_7340"])
+            and scalar != object_probe):
+        return {
+            "rule": "API-NOSQL-DIFFERENTIAL", "case": number, "severity": "info",
+            "confidence": "low", "status": "manual-validation-required",
+            "evidence": "Stable scalar/object response differential; schema/type validation may explain it.",
+        }
+    return None
+
+
+def run_json_cases(data: dict, *, timeout: float = 5.0,
+                   verify_tls: bool = True, proxy: str | None = None, send=None) -> dict:
+    from .http_client import validate_loopback_proxy
+    validate_loopback_proxy(proxy)
+    if not isinstance(data, dict) or data.get("schema") != SCHEMA:
+        raise ValueError("unsupported JSON case schema")
+    origin = _validate_origin(data.get("origin"))
     cases = data.get("cases")
     if not isinstance(cases, list) or not 1 <= len(cases) <= MAX_CASES:
         raise ValueError("JSON cases must contain 1-6 explicit entries")
     if not isinstance(timeout, (float, int)) or not 0.2 <= timeout <= 15:
         raise ValueError("timeout must be 0.2-15 seconds")
 
-    prepared = []
-    for item in cases:
-        if not isinstance(item, dict) or set(item) != {
-            "path", "kind", "body", "field", "headers",
-        }:
-            raise ValueError("JSON case must define path/kind/body/field/headers")
-        path, kind, body, field, headers = (item[key] for key in (
-            "path", "kind", "body", "field", "headers"))
-        if (not isinstance(path, str) or not path.startswith("/") or path.startswith("//")
-                or any(c in path for c in ("?", "#", "\\", "\r", "\n"))
-                or "%" in path or ".." in path):
-            raise ValueError("JSON case path must be a literal same-origin path")
-        if kind not in {"ssti", "nosql"}:
-            raise ValueError("JSON case kind must be ssti or nosql")
-        if not isinstance(body, dict) or not isinstance(field, list) or not 1 <= len(field) <= 8:
-            raise ValueError("JSON case requires object body and field name path")
-        if not all(isinstance(name, str) and FIELDS.fullmatch(name) for name in field):
-            raise ValueError("invalid JSON field names")
-        if not isinstance(headers, dict) or any(
-            not isinstance(k, str) or k.lower() not in {
-                "authorization", "cookie", "x-api-key", "x-csrf-token",
-                "x-xsrf-token", "x-csrftoken",
-            }
-            or not isinstance(v, str) or len(v) > 4096
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in v)
-            for k, v in headers.items()
-        ):
-            raise ValueError("JSON case headers may contain authentication and CSRF tokens only")
-        cursor = body
-        try:
-            for name in field[:-1]:
-                cursor = cursor[name]
-                if not isinstance(cursor, dict):
-                    raise ValueError("JSON field parent is not an object")
-            original = cursor[field[-1]]
-        except (KeyError, TypeError) as exc:
-            raise ValueError("field must exist in the supplied body") from exc
-        if not isinstance(original, str):
-            raise ValueError("target field must be a string for baseline comparison")
-        if len(json.dumps(body, ensure_ascii=True)) > MAX_BODY:
-            raise ValueError("JSON body exceeds input cap")
-        prepared.append((path, kind, body, field, headers))
+    prepared = [_prepare_case(item) for item in cases]
     sent = 0
     findings = []
     outcomes = []
@@ -138,46 +202,13 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
         )
         if sent + len(probes) > MAX_REQUESTS:
             raise ValueError("JSON request budget exceeded")
-        samples = []
-        for value in probes:
-            mutated = _field_body(body, field, value)
-            # Check size before sending, including oversized replacement.
-            if len(json.dumps(mutated).encode("utf-8")) > MAX_BODY:
-                raise ValueError("JSON probe exceeds request size limit")
-            result = client(origin + path, mutated, headers, timeout)
-            if not isinstance(result, dict) or not {
-                "status", "digest", "body",
-            }.issubset(result):
-                raise ValueError("invalid JSON test response")
-            sent += 1
-            samples.append(result)
+        samples = _collect_samples(client, origin, path, body, field, headers, timeout, probes)
+        sent += len(samples)
+        finding = (_ssti_finding if kind == "ssti" else _nosql_finding)(samples, number)
         outcome = "inconclusive"
-        if kind == "ssti":
-            baseline, first, second = samples
-            if (b"22020" in first["body"] and b"22020" in second["body"]
-                    and b"22020" not in baseline["body"]
-                    and first["status"] == second["status"]
-                    and first["digest"] == second["digest"]
-                    and b"22020" not in PROBE_SSTI.encode()):
-                outcome = "arithmetic-observed"
-                findings.append({
-                    "rule": "API-JSON-SSTI-REVIEW", "case": number, "severity": "medium",
-                    "confidence": "medium", "status": "manual-validation-required",
-                    "evidence": "Repeated JSON arithmetic probe produced computed marker absent from baseline.",
-                })
-        else:
-            first, second, probe_a, probe_b = samples
-            scalar = _signature(first, ["WCSBASE"])
-            object_probe = _signature(probe_a, ["WCS_NONMATCH_7340"])
-            if (scalar == _signature(second, ["WCSBASE"])
-                    and object_probe == _signature(probe_b, ["WCS_NONMATCH_7340"])
-                    and scalar != object_probe):
-                outcome = "differential-review"
-                findings.append({
-                    "rule": "API-NOSQL-DIFFERENTIAL", "case": number, "severity": "info",
-                    "confidence": "low", "status": "manual-validation-required",
-                    "evidence": "Stable scalar/object response differential; schema/type validation may explain it.",
-                })
+        if finding:
+            outcome = "arithmetic-observed" if kind == "ssti" else "differential-review"
+            findings.append(finding)
         outcomes.append({"case": number, "path": path, "kind": kind,
                          "field_names": field, "requests_sent": len(probes),
                          "outcome": outcome})
