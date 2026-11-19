@@ -285,8 +285,11 @@ including the incompatible combination `SameSite=None` without `Secure`.
 Cookie **names and values are never reported**, and these checks are
 configuration hints rather than a claim that a cookie contains a session.
 Imported Burp XML exports are also examined without extra requests.
-When multiple Set-Cookie header lines are collapsed by a source, only the
-available header value can be inspected; absence of a signal is not proof
+Multiple independent Set-Cookie headers are now inspected individually
+during HTTP crawling and Burp XML import, with at most 50 cookie lines per
+response and deduplicated findings. Cookie names and values are never reported.
+When a source (such as CDP) has already collapsed the original headers,
+only the available value can be inspected; absence of a signal is not proof
 of a safe session configuration.
 
 ### Non-GET API routes and minified bundle hints

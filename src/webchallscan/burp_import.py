@@ -19,37 +19,40 @@ MAX_ITEMS = 500
 MAX_RESPONSE_TEXT = 1_000_000
 
 
-def _response_headers(item: ET.Element) -> dict[str, str]:
+def _response_headers(item: ET.Element) -> tuple[dict[str, str], tuple[str, ...]]:
     node = item.find("response")
     if node is None or not node.text:
-        return {}
+        return {}, ()
     raw_text = node.text.strip()
     if len(raw_text) > MAX_RESPONSE_TEXT:
-        return {}
+        return {}, ()
     try:
         if node.get("base64", "").lower() == "true":
             raw = base64.b64decode(raw_text, validate=True)
         else:
             raw = raw_text.encode("utf-8", "replace")
     except (ValueError, binascii.Error):
-        return {}
+        return {}, ()
     if len(raw) > MAX_RESPONSE_TEXT:
-        return {}
+        return {}, ()
     head = raw.split(b"\r\n\r\n", 1)[0].split(b"\n\n", 1)[0]
     headers: dict[str, str] = {}
+    cookies: list[str] = []
     for line in head.splitlines()[1:100]:
         if b":" not in line:
             continue
         name, value = line.split(b":", 1)
         key = name.decode("ascii", "ignore").strip().lower()
-        if key in {
+        if key == "set-cookie":
+            if len(cookies) < 50:
+                cookies.append(value.decode("utf-8", "replace").strip()[:8192])
+        elif key in {
             "content-type", "strict-transport-security", "content-security-policy",
             "x-content-type-options", "x-frame-options",
             "access-control-allow-origin", "access-control-allow-credentials",
-            "set-cookie",
         }:
             headers[key] = value.decode("utf-8", "replace").strip()[:4096]
-    return headers
+    return headers, tuple(cookies)
 
 
 def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
@@ -117,13 +120,14 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
         if 100 <= status <= 599:
             if status not in record["statuses"]:
                 record["statuses"].append(status)
-            headers = _response_headers(item)
+            headers, cookies = _response_headers(item)
             is_document = (entry["method"] == "GET" and
                            "text/html" in headers.get("content-type", "").lower())
             signals = inspect_response(
                 str(entry["method"]), str(entry["path"]),
                 "Document" if is_document else "Other",
                 status, headers, origin[0] == "https",
+                cookie_headers=cookies,
             )
             for signal in signals:
                 key = (signal["rule"], signal["method"], signal["path"])

@@ -144,6 +144,7 @@ class Response:
     status: int
     headers: dict[str, str]
     text: str
+    cookie_headers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,9 +244,11 @@ class Scanner:
         result = read_bounded(self.opener, req, self.timeout, MAX_BODY)
         charset = ("utf-8" if result.http_error else
                    (result.headers.get_content_charset() or "utf-8"))
+        cookies = tuple(result.headers.get_all("Set-Cookie", [])) if hasattr(
+            result.headers, "get_all") else ()
         return Response(result.url, result.status,
                         {k.lower(): v for k, v in result.headers.items()},
-                        result.body.decode(charset, "replace"))
+                        result.body.decode(charset, "replace"), cookies)
 
     def _finding(self, **kwargs: object) -> Finding:
         kwargs.setdefault("profile", self.profile)
@@ -329,6 +332,7 @@ class Scanner:
         observations = inspect_response(
             method, path, "Document" if is_document else "Other",
             response.status, response.headers, self.origin[0] == "https",
+            cookie_headers=response.cookie_headers or None,
         )
         patches = {
             "HEADER-HSTS": "Configure Strict-Transport-Security on HTTPS responses.",
