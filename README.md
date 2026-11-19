@@ -319,6 +319,22 @@ stay hidden. Work entirely inside Burp Suite Community: capture the request in
 **Proxy > HTTP history**, right-click **Send to Repeater**, edit the named
 parameter to the printed payload, and send.
 
+### Optional command-style CLI aliases
+
+The legacy flag-based CLI is unchanged. The following aliases provide
+a shorter interface while using the **same** validation and execution paths:
+
+```bash
+webchallscan scan https://challenge.example/ --authorized
+webchallscan observe --cdp http://127.0.0.1:9222 --authorized
+webchallscan contract ./contract.json --authorized
+webchallscan replay https://challenge.example/ --authorized --active
+```
+
+`observe` defaults to a 20-second window, overridable with
+`--observe-network SECONDS`. `replay` maps to the existing
+`--burp-procedure` mode. Existing scripts without a subcommand still work.
+
 ### Export reproducible curl / Python snippets
 
 To render **text only** for findings with high confidence and proof payloads:
