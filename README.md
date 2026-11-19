@@ -41,8 +41,20 @@ webchallscan https://challenge.example/ --authorized --active --verbose
 webchallscan https://challenge.example/ --authorized --format json > scan.json
 ```
 
-`--verbose` restores full vectors, replay fields, expected evidence, and
-recovery guidance in the text view. `--color auto|always|never` controls only
+Text scan reports show at most **20 findings by default**, with high-severity
+issues first. All finding counts remain visible. Adjust the display only
+without changing scanning or exit status:
+
+```bash
+webchallscan https://challenge.example/ --authorized --top 5 --min-severity medium
+webchallscan https://challenge.example/ --authorized --verbose
+```
+
+`--verbose` shows all findings by default and restores full vectors, replay
+fields, expected evidence, and recovery guidance. `--top N` (1-1000)
+overrides the display cap; `--min-severity` accepts
+`critical|high|medium|low|info`. These filters are for scanner **text**
+reports only; JSON remains complete and unfiltered. `--color auto|always|never` controls only
 the presentation. The JSON schema, underlying findings, privacy redaction,
 exit codes and request behavior are unchanged. `NO_COLOR` and non-interactive
 output are respected by `--color auto`.

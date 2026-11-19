@@ -80,6 +80,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto", help="terminal colors: auto, always or never")
     p.add_argument("--verbose", action="store_true", help="show full finding vectors, replay and recovery details in text reports")
     p.add_argument("--human", action="store_true", help="human-readable colored view of inventories and API/offline JSON reports (opt-in)")
+    p.add_argument("--top", type=int, metavar="N", help="show up to N scanner finding details in text reports (default: 20)")
+    p.add_argument("--min-severity", choices=("critical", "high", "medium", "low", "info"),
+                   default="info", help="minimum scanner text finding severity (default: info)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--extension-path", action="store_true", help="print the bundled Chromium extension directory and exit")
     return p
@@ -123,6 +126,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
     if args.human and args.format == "json":
         print("error: --human and --format json are mutually exclusive", file=sys.stderr)
+        return 2
+    if args.top is not None and not 1 <= args.top <= 1000:
+        print("error: --top must be 1-1000", file=sys.stderr)
+        return 2
+    if (args.top is not None or args.min_severity != "info") and (
+            args.format == "json" or args.human or args.quick
+            or args.observe_network is not None or args.plan_inventory
+            or args.import_burp or args.burp_session_from
+            or args.audit_jwt_file or args.audit_session_file
+            or args.validate_api_contract or args.check_api_cases
+            or args.check_json_cases or args.burp_procedure
+            or args.export_curl or args.export_python):
+        print("error: --top and --min-severity apply only to scanner text reports", file=sys.stderr)
         return 2
 
     def _format_result(result: dict, indent: int = 2) -> str:
@@ -381,7 +397,8 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_json(report) if args.format == "json" else render_text(report, args.color, verbose=args.verbose))
+    print(render_json(report) if args.format == "json" else render_text(report, args.color, verbose=args.verbose,
+                              top=args.top, min_severity=args.min_severity))
     if report.pages_scanned == 0:
         return 3
     return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
