@@ -46,6 +46,7 @@ def _response_headers(item: ET.Element) -> dict[str, str]:
             "content-type", "strict-transport-security", "content-security-policy",
             "x-content-type-options", "x-frame-options",
             "access-control-allow-origin", "access-control-allow-credentials",
+            "set-cookie",
         }:
             headers[key] = value.decode("utf-8", "replace").strip()[:4096]
     return headers

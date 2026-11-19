@@ -325,6 +325,10 @@ class Scanner:
             "HEADER-NOSNIFF": "Send X-Content-Type-Options: nosniff.",
             "HEADER-FRAMING": "Apply CSP frame-ancestors or X-Frame-Options to restrict framing.",
             "HEADER-CORS-CONFLICT": "Avoid combining wildcard allowed origins with credentialed CORS; configure explicit trusted origins.",
+            "COOKIE-SECURE": "Set Secure on HTTPS cookies.",
+            "COOKIE-HTTPONLY": "Set HttpOnly for cookies not intended for JavaScript.",
+            "COOKIE-SAMESITE": "Select an explicit SameSite policy appropriate to the application.",
+            "COOKIE-SAMESITE-NONE": "Use Secure together with SameSite=None.",
         }
         return [self._finding(
             rule=item["rule"], title=item["title"],
