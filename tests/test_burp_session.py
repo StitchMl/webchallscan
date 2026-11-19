@@ -26,7 +26,8 @@ def burp_xml():
         "</items>")
 
 
-def test_burp_session_export_private_scope_and_loader_compat(tmp_path):
+def test_burp_session_export_private_scope_and_loader_compat(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     result = export_burp_session(str(source), str(dest), "https://lab.example")
@@ -44,7 +45,8 @@ def test_burp_session_export_private_scope_and_loader_compat(tmp_path):
     assert "MUST_NOT_EXPORT" not in dest.read_text()
 
 
-def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path):
+def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     with pytest.raises(ValueError):
@@ -55,7 +57,8 @@ def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path):
         export_burp_session(str(source), str(dest), "https://lab.example")
 
 
-def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys):
+def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     args = ["--burp-session-from", str(source), "--burp-session-out", str(dest),
@@ -70,7 +73,8 @@ def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys):
     assert "MUST_NOT_EXPORT" not in visible.out + visible.err
 
 
-def test_burp_session_rejects_dtd(tmp_path):
+def test_burp_session_rejects_dtd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source = tmp_path / "bad.xml"
     source.write_text('<!DOCTYPE items [<!ENTITY x "secret">]><items>&x;</items>')
     with pytest.raises(ValueError):
