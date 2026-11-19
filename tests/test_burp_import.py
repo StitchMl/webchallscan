@@ -23,7 +23,8 @@ def _xml(response):
 </items>"""
 
 
-def test_import_redacts_and_reuses_planner(tmp_path):
+def test_import_redacts_and_reuses_planner(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     path = tmp_path / "history.xml"
     path.write_text(_xml(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
@@ -46,7 +47,8 @@ def test_import_redacts_and_reuses_planner(tmp_path):
     assert plan["endpoint_count"] == 2
 
 
-def test_import_rejects_dtd_oversize_and_unexpected_root(tmp_path):
+def test_import_rejects_dtd_oversize_and_unexpected_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "bad.xml"
     for raw in (
         '<!DOCTYPE items [<!ENTITY x "secret">]><items><item>&x;</item></items>',
@@ -60,7 +62,8 @@ def test_import_rejects_dtd_oversize_and_unexpected_root(tmp_path):
         import_burp_xml(str(file))
 
 
-def test_import_requires_valid_expected_origin(tmp_path):
+def test_import_requires_valid_expected_origin(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "history.xml"
     file.write_text(_xml("HTTP/1.1 200 OK\r\n\r\n"))
     with pytest.raises(ValueError):
@@ -71,7 +74,8 @@ def test_import_requires_valid_expected_origin(tmp_path):
     assert report["observed_requests"] == 2
 
 
-def test_cli_burp_mode_is_offline_and_requires_authorization(tmp_path, capsys):
+def test_cli_burp_mode_is_offline_and_requires_authorization(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "history.xml"
     file.write_text(_xml("HTTP/1.1 200 OK\r\n\r\n"))
     assert main(["--import-burp", str(file)]) == 2
