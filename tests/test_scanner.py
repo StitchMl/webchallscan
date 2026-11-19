@@ -276,3 +276,35 @@ def test_no_routes_explains_scan_coverage(server):
     assert any("No navigable links" in note for note in report.coverage)
     assert any("No eligible query or form parameters" in note for note in report.coverage)
     assert "coverage" in report.to_dict()
+
+def test_select_defaults_preserve_first_or_explicit_option():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed("""
+    <form method="post" action="/submit">
+      <select name="first"><option value="a">A</option><option value="b">B</option></select>
+      <select name="chosen"><option value="a">A</option><option selected value="b">B</option></select>
+      <select name="empty"><option value="">None</option><option value="x">X</option></select>
+      <input name="other" value="kept">
+    </form>
+    """)
+    assert parser.forms[0].inputs == [
+        ("first", "select", "a"),
+        ("chosen", "select", "b"),
+        ("empty", "select", ""),
+        ("other", "text", "kept"),
+    ]
+
+
+def test_select_without_name_does_not_affect_following_form_controls():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed("""
+    <form><select><option selected value="ignore"></option></select>
+    <input name="q" value="ok"></form>
+    <form><select name="role"><option value="guest"></option></select></form>
+    """)
+    assert parser.forms[0].inputs == [("q", "text", "ok")]
+    assert parser.forms[1].inputs == [("role", "select", "guest")]
