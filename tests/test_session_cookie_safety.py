@@ -79,3 +79,40 @@ def test_valid_scoped_cookie_still_loads_without_network(tmp_path):
     scanner = Scanner("https://lab.example", session=session, max_requests=2)
     assert scanner.requests_sent == 0
     assert len(list(scanner.cookies)) == 1
+
+
+def test_session_file_rejects_oversize_before_json_parse(tmp_path):
+    file = tmp_path / "session.json"
+    file.write_bytes(b" " * 2_000_001)
+    with pytest.raises(SessionCaptureError, match="exceeds 2 MB"):
+        load_session_file(str(file))
+
+
+def test_session_file_refuses_symlink_to_other_user_file(tmp_path):
+    original = tmp_path / "real.json"
+    original.write_text(json.dumps({"url": "https://lab.example", "cookies": []}))
+    alias = tmp_path / "alias.json"
+    alias.symlink_to(original)
+    with pytest.raises(SessionCaptureError, match="cannot read"):
+        load_session_file(str(alias))
+    assert load_session_file(str(original)).url == "https://lab.example"
+
+
+def test_session_file_rejects_non_regular_and_invalid_utf8(tmp_path):
+    directory = tmp_path / "folder.json"
+    directory.mkdir()
+    with pytest.raises(SessionCaptureError, match="regular file"):
+        load_session_file(str(directory))
+    malformed = tmp_path / "malformed.json"
+    malformed.write_bytes(bytes([255, 254]))
+    with pytest.raises(SessionCaptureError, match="valid session JSON"):
+        load_session_file(str(malformed))
+
+
+def test_session_file_accepts_explicit_external_regular_path(tmp_path, monkeypatch):
+    source = tmp_path / "safe.json"
+    source.write_text(json.dumps({"url": "https://lab.example", "cookies": []}))
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    assert load_session_file(str(source)).url == "https://lab.example"
