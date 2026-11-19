@@ -11,6 +11,7 @@ from urllib.error import URLError
 from . import __version__
 from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
+from .burp_import import import_burp_xml
 from .network import observe_cdp
 from .planner import load_inventory, plan_inventory
 from .replay import render_burp_procedure
@@ -44,6 +45,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--validate-api-contract", metavar="JSON", help="bounded GET-only IDOR, fuzz and business invariant checks")
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
     p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
+    p.add_argument("--import-burp", metavar="XML", help="offline redacted inventory from a Burp Suite XML HTTP history export")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
@@ -85,9 +87,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.validate_api_contract or args.check_api_cases):
+                       args.validate_api_contract or args.check_api_cases or args.import_burp):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
+    if args.import_burp is not None:
+        if (not args.authorized or args.url or args.active or args.cdp or args.browser_session
+                or args.session_file or args.listen_session or args.quick
+                or args.observe_network is not None or args.plan_inventory
+                or args.validate_api_contract or args.check_api_cases
+                or args.include_session_secrets or args.burp_procedure):
+            print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(import_burp_xml(args.import_burp, args.expect_origin), indent=2))
+            return 0
+        except (ValueError, OSError) as exc:
+            print(f"error: Burp XML import failed: {exc}", file=sys.stderr)
+            return 2
     if args.quick:
         if not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
             print("error: --quick requires --authorized --cdp and no other scan mode", file=sys.stderr)
