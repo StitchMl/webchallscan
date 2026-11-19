@@ -24,7 +24,7 @@ from .http_client import (SameOriginRedirectHandler, read_bounded,
 from .jwt_audit import audit_jwt
 from .model import Finding, ScanReport, redact_url
 from .posture import inspect_response
-from .session import BrowserSession
+from .session import BrowserSession, validate_session_cookie
 
 CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
 CMD_RESULT = "WCSA7340WCSZ"
@@ -202,6 +202,7 @@ class Scanner:
     def _import_session_cookies(self, session: BrowserSession) -> None:
         host = urlsplit(self.target).hostname or ""
         for item in session.cookies:
+            validate_session_cookie(item.name, item.value, item.domain, item.path)
             domain = item.domain.lstrip(".") or host
             if host != domain and not host.endswith("." + domain):
                 raise ValueError("captured session contains a cookie outside the target origin")
