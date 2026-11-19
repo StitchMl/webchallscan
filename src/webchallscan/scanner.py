@@ -803,7 +803,7 @@ class Scanner:
                 options, re.I,
             )
             url = re.search(
-                r"""(?:^|,)\s*url\s*:\s*['"]([^'"]{1,256})['"]""",
+                r"""(?:^|,)\s*url\s*:\s*['"]([^'"]{1,256})['"]\s*(?=,|$)""",
                 options, re.I,
             )
             if method and url:
