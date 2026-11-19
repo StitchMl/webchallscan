@@ -52,6 +52,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
     p.add_argument("--burp-procedure", action="store_true",
                    help="print a manual Burp Repeater procedure for each reproducible finding instead of the report")
+    p.add_argument("--burp-raw", action="store_true", help="include redacted Raw HTTP request templates in --burp-procedure")
     p.add_argument("--include-session-secrets", action="store_true",
                    help="print cookie values in the Burp procedure instead of hiding them")
     p.add_argument("--max-pages", type=int, default=20)
@@ -96,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                 or args.session_file or args.listen_session or args.quick
                 or args.observe_network is not None or args.plan_inventory
                 or args.validate_api_contract or args.check_api_cases or args.from_inventory
-                or args.include_session_secrets or args.burp_procedure):
+                or args.include_session_secrets or args.burp_procedure or args.burp_raw):
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
             return 2
         try:
@@ -179,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.authorized:
         print("error: --authorized is required; scan only targets you are permitted to test", file=sys.stderr)
         return 2
+    if args.burp_raw and not args.burp_procedure:
+        print("error: --burp-raw requires --burp-procedure", file=sys.stderr)
+        return 2
     if args.include_session_secrets and not args.burp_procedure:
         print("error: --include-session-secrets requires --burp-procedure", file=sys.stderr)
         return 2
@@ -226,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.burp_procedure:
             if args.include_session_secrets:
                 print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
-            print(render_burp_procedure(report, args.include_session_secrets))
+            print(render_burp_procedure(report, args.include_session_secrets, args.burp_raw))
             return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
     except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
