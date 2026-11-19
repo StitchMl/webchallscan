@@ -8,7 +8,8 @@ from __future__ import annotations
 
 def inspect_response(method: str, path: str, resource_type: str,
                      status: int, headers: dict[str, str],
-                     secure_origin: bool) -> list[dict[str, str]]:
+                     secure_origin: bool, *,
+                     cookie_headers: tuple[str, ...] | None = None) -> list[dict[str, str]]:
     h = {str(k).lower(): str(v) for k, v in headers.items()}
     out: list[dict[str, str]] = []
     def add(rule: str, title: str, severity: str, evidence: str) -> None:
@@ -37,24 +38,36 @@ def inspect_response(method: str, path: str, resource_type: str,
             "Wildcard ACAO appears together with Access-Control-Allow-Credentials: true")
     # Inspect only Set-Cookie attributes. Never store cookie values or names.
     # This is intentionally conservative: a cookie's purpose is unknown.
-    cookie = h.get("set-cookie", "")
-    if cookie and len(cookie) <= 8192:
+    # Multiple Set-Cookie headers are independent, not comma-joinable.
+    # Keep their names and values only in memory; deduplicate findings by rule.
+    cookies = (cookie_headers if cookie_headers is not None
+               else (h.get("set-cookie", ""),))
+    emitted = set()
+    def add_cookie(rule: str, title: str, severity: str, evidence: str) -> None:
+        if rule not in emitted:
+            emitted.add(rule)
+            add(rule, title, severity, evidence)
+
+    for cookie in cookies[:50]:
+        if not isinstance(cookie, str) or not cookie or len(cookie) > 8192:
+            continue
         first, *attributes = cookie.split(";")
-        if "=" in first and first.split("=", 1)[0].strip():
-            attr_names = {part.strip().split("=", 1)[0].lower()
-                          for part in attributes}
-            if secure_origin and "secure" not in attr_names:
-                add("COOKIE-SECURE", "Cookie lacks Secure attribute", "low",
-                    "A cookie on an HTTPS response omits Secure; the cookie name and value are hidden")
-            if "httponly" not in attr_names:
-                add("COOKIE-HTTPONLY", "Cookie lacks HttpOnly attribute", "info",
-                    "A cookie omits HttpOnly; applicability depends on the cookie's purpose")
-            if "samesite" not in attr_names:
-                add("COOKIE-SAMESITE", "Cookie lacks SameSite attribute", "info",
-                    "A cookie omits an explicit SameSite attribute; browser defaults may apply")
-            if "samesite" in attr_names and any(
-                    part.strip().lower().startswith("samesite=none") for part in attributes
-            ) and "secure" not in attr_names:
-                add("COOKIE-SAMESITE-NONE", "SameSite=None cookie lacks Secure", "low",
-                    "SameSite=None appears without Secure; modern browsers may reject the cookie")
+        if "=" not in first or not first.split("=", 1)[0].strip():
+            continue
+        attr_names = {part.strip().split("=", 1)[0].lower()
+                      for part in attributes}
+        if secure_origin and "secure" not in attr_names:
+            add_cookie("COOKIE-SECURE", "Cookie lacks Secure attribute", "low",
+                       "A cookie on an HTTPS response omits Secure; the cookie name and value are hidden")
+        if "httponly" not in attr_names:
+            add_cookie("COOKIE-HTTPONLY", "Cookie lacks HttpOnly attribute", "info",
+                       "A cookie omits HttpOnly; applicability depends on the cookie's purpose")
+        if "samesite" not in attr_names:
+            add_cookie("COOKIE-SAMESITE", "Cookie lacks SameSite attribute", "info",
+                       "A cookie omits an explicit SameSite attribute; browser defaults may apply")
+        if "samesite" in attr_names and any(
+                part.strip().lower().startswith("samesite=none") for part in attributes
+        ) and "secure" not in attr_names:
+            add_cookie("COOKIE-SAMESITE-NONE", "SameSite=None cookie lacks Secure", "low",
+                       "SameSite=None appears without Secure; modern browsers may reject the cookie")
     return out
