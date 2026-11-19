@@ -353,3 +353,23 @@ def test_proxy_requires_explicit_loopback_http_endpoint(server):
     scanner = Scanner(server, proxy="http://127.0.0.1:8080")
     assert scanner.proxy == "http://127.0.0.1:8080"
     assert any(type(handler).__name__ == "ProxyHandler" for handler in scanner.opener.handlers)
+
+
+def test_inventory_seeds_discover_unlinked_get_endpoints_within_budget(server):
+    url = server + "/search?q=WCSBASE"
+    baseline = Scanner(server + "/protected", max_pages=2, max_requests=4).scan()
+    assert baseline.pages_scanned == 1
+    scanner = Scanner(server + "/protected", max_pages=2, max_requests=4,
+                      inventory_urls=(url,))
+    report = scanner.scan()
+    assert report.requests_sent == 4
+    assert report.pages_scanned == 2
+    assert any(f.parameter == "q" for f in report.findings)
+    assert any("Seeded 1 GET endpoint" in note for note in report.coverage)
+
+
+def test_inventory_seeds_reject_external_origin_and_remain_opt_in(server):
+    with pytest.raises(ValueError):
+        Scanner(server, inventory_urls=("https://other.example/path",))
+    report = Scanner(server + "/protected", max_pages=1, max_requests=3).scan()
+    assert not any("Seeded" in note for note in report.coverage)
