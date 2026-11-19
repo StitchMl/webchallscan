@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import re
+import stat
 from urllib.parse import parse_qsl
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -121,10 +123,27 @@ def _csrf_request_sources(item: ET.Element, method: str) -> tuple[str, ...]:
 
 
 def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
-    file = Path(path)
-    if file.stat().st_size > MAX_XML:
+    # The export path is operator-controlled, not a URL or a remote fetch.
+    # Restrict agent-supplied paths to the working tree and read a regular
+    # file with a hard cap (not stat() followed by an unbounded read).
+    try:
+        file = Path(path).resolve(strict=True)
+        file.relative_to(Path.cwd().resolve())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Burp XML must be inside the working directory") from exc
+    if file.suffix.lower() != ".xml" or not file.is_file():
+        raise ValueError("Burp input must be a regular .xml file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(file, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("Burp input must be a regular .xml file")
+            raw = stream.read(MAX_XML + 1)
+    except OSError as exc:
+        raise ValueError("cannot read Burp XML export") from exc
+    if len(raw) > MAX_XML:
         raise ValueError("Burp XML export exceeds the 5 MB limit")
-    raw = file.read_bytes()
     # Refuse DTDs/entities instead of processing potentially hostile exports.
     if b"<!doctype" in raw.lower() or b"<!entity" in raw.lower():
         raise ValueError("DTD and XML entities are not supported")
