@@ -474,6 +474,24 @@ Only keyword **categories** are included in the report; the comment text
 and possible secrets are never copied to findings. These are informational
 hints, not confirmed vulnerabilities. No additional network requests occur.
 
+### Offline JavaScript Source Map v3 audit
+
+After manually saving a `.js.map` file from an authorized environment,
+inspect its metadata **without making any HTTP requests**:
+
+```bash
+webchallscan --audit-source-map-file ./app.js.map
+webchallscan --audit-source-map-file ./app.js.map --human --color always
+```
+
+The bounded local decoder supports Source Map v3 (2 MB file, up to 500
+source entries) and reports only aggregate file-extension categories,
+embedded source counts and review keyword categories. It deliberately
+omits filenames, source paths, sourceRoot, source content and all other
+arbitrary values. A source-map URL hint is not proof of accessibility;
+download only from authorized targets and inspect sensitive content locally.
+The JSON output remains the default for scripting.
+
 ### Passive JavaScript source-map hints
 
 When the crawler already fetches same-origin JavaScript assets linked from HTML,
