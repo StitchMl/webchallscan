@@ -410,3 +410,31 @@ def test_source_map_block_comment_support(server):
         server + "/app.min.js", 200, {},
         "/*# sourceMappingURL=app.min.js.map */"
     ))
+
+def test_html_comment_hints_do_not_disclose_values(server):
+    from webchallscan.scanner import PageParser, Response
+    parser = PageParser()
+    parser.feed('<html><!-- TODO: password=ULTRASECRET, FLAG{hidden} --><h1>ok</h1></html>')
+    assert parser.comment_hints == {"TODO", "PASSWORD", "FLAG"}
+    scanner = Scanner(server)
+    findings = scanner._passive_findings(Response(server + "/comments", 200,
+        {"content-type": "text/html"}, "<html>ok</html>"), parser)
+    comment = next(f for f in findings if f.rule == "WEB-COMMENT-HINT-001")
+    assert comment.severity == "info"
+    assert "ULTRASECRET" not in repr(comment.to_dict())
+    assert "FLAG{hidden}" not in repr(comment.to_dict())
+
+
+def test_js_comment_hints_are_bounded_and_do_not_include_literals(server):
+    from webchallscan.scanner import Response
+    scanner = Scanner(server)
+    comments = "// FIXME secret token=VERYPRIVATE\nconst x = 1;\n/* debug for admin */"
+    result = scanner._js_comment_hints(Response(server + "/bundle.js", 200,
+        {"content-type": "application/javascript"}, comments))
+    assert len(result) == 1
+    assert "FIXME" in result[0].evidence
+    assert "SECRET" in result[0].evidence
+    assert "DEBUG" in result[0].evidence
+    assert "VERYPRIVATE" not in repr(result[0].to_dict())
+    assert scanner.requests_sent == 0
+    assert scanner._js_comment_hints(Response(server + "/bundle.js", 404, {}, comments)) == []
