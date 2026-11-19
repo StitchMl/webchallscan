@@ -19,6 +19,7 @@ from urllib.request import (
 )
 
 from .model import Finding, ScanReport, redact_url
+from .posture import inspect_response
 from .session import BrowserSession
 
 CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
@@ -252,6 +253,37 @@ class Scanner:
             forms=forms,
             parameters=tuple(sorted(parameters)),
         )
+
+    def _posture_findings(self, response: Response, method: str = "GET") -> list[Finding]:
+        """Analyze existing response metadata without additional HTTP requests.
+
+        Document policies apply only to HTML GET documents. Other responses
+        are eligible for the CORS consistency signal only.
+        """
+        content_type = response.headers.get("content-type", "").lower()
+        is_document = (method == "GET" and 200 <= response.status < 300
+                       and ("text/html" in content_type or
+                            ("<html" in response.text[:500].lower() and
+                             not content_type.startswith(("application/json", "text/plain")))))
+        path = urlsplit(response.url).path or "/"
+        observations = inspect_response(
+            method, path, "Document" if is_document else "Other",
+            response.status, response.headers, self.origin[0] == "https",
+        )
+        patches = {
+            "HEADER-HSTS": "Configure Strict-Transport-Security on HTTPS responses.",
+            "HEADER-CSP": "Set a restrictive Content-Security-Policy tailored to the application.",
+            "HEADER-NOSNIFF": "Send X-Content-Type-Options: nosniff.",
+            "HEADER-FRAMING": "Apply CSP frame-ancestors or X-Frame-Options to restrict framing.",
+            "HEADER-CORS-CONFLICT": "Avoid combining wildcard allowed origins with credentialed CORS; configure explicit trusted origins.",
+        }
+        return [self._finding(
+            rule=item["rule"], title=item["title"],
+            severity=item["severity"], confidence=item["confidence"],
+            url=response.url, method=method, evidence=item["evidence"],
+            vector=f"{method} {redact_url(response.url)}; inspect response headers.",
+            patch=patches.get(item["rule"], "Review the response header configuration."),
+        ) for item in observations]
 
     def _passive_findings(self, response: Response, parser: PageParser) -> list[Finding]:
         out: list[Finding] = []
@@ -500,11 +532,14 @@ class Scanner:
         successful_pages = 0
         candidates: list[Finding] = []
         discovered_routes = 0
-        try:
-            self._request(self.target, "HEAD")
-            self._request(self.target, "OPTIONS")
-        except (URLError, OSError, RuntimeError, ValueError):
-            report.errors.append("metadata request failed")
+        for method in ("HEAD", "OPTIONS"):
+            if self.requests_sent >= self.max_requests:
+                break
+            try:
+                metadata = self._request(self.target, method)
+                report.findings.extend(self._posture_findings(metadata, method))
+            except (URLError, OSError, RuntimeError, ValueError):
+                report.errors.append(f"{method} metadata request failed")
         while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
             url = queue.popleft()
             if url in seen:
@@ -521,7 +556,7 @@ class Scanner:
             if "html" in ctype or "<html" in response.text[:500].lower():
                 parser.feed(response.text)
             self.observations[response.url] = self._observe(response, parser)
-            items = self._passive_findings(response, parser)
+            items = self._posture_findings(response) + self._passive_findings(response, parser)
             report.findings.extend(items)
             candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001", "WEB-XSS-001"})
             # Examine inline scripts and bounded same-origin JavaScript files for
