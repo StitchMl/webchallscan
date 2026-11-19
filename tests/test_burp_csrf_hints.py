@@ -22,7 +22,8 @@ def form_request():
             b"username=alice&csrf_token=PRIVATE-FORM-TOKEN")
 
 
-def test_burp_form_marker_and_header_are_offline_and_redacted(tmp_path):
+def test_burp_form_marker_and_header_are_offline_and_redacted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "history.xml"
     file.write_text(xml_export("/submit", "POST", form_request()))
     result = import_burp_xml(str(file), "https://lab.example")
@@ -39,7 +40,8 @@ def test_burp_form_marker_and_header_are_offline_and_redacted(tmp_path):
         assert secret not in repr(result)
 
 
-def test_json_marker_presence_and_ordinary_field_absence(tmp_path):
+def test_json_marker_presence_and_ordinary_field_absence(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "history.xml"
     raw = (b"PATCH /api/edit HTTP/1.1\r\nContent-Type: application/json\r\n\r\n"
            b'{"csrf":"JSONVERYSECRET","payload":{"name":"PRIVATE"}}')
@@ -56,7 +58,8 @@ def test_json_marker_presence_and_ordinary_field_absence(tmp_path):
                    for f in import_burp_xml(str(file), "https://lab.example")["passive_findings"])
 
 
-def test_get_and_malformed_or_oversize_requests_are_never_csrf_confirmations(tmp_path):
+def test_get_and_malformed_or_oversize_requests_are_never_csrf_confirmations(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     import xml.etree.ElementTree as ET
     item = ET.fromstring(xml_export("/submit", "GET", form_request())).find("item")
     assert _csrf_request_sources(item, "GET") == ()
