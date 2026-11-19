@@ -373,6 +373,19 @@ When a source (such as CDP) has already collapsed the original headers,
 only the available value can be inspected; absence of a signal is not proof
 of a safe session configuration.
 
+### More JavaScript API configuration hints
+
+The static analyzer now recognizes explicit non-GET methods even when
+`url` and `method` (or jQuery `type`) appear in either order within
+small, literal `axios({...})`, `axios.request({...})` and
+`$.ajax({...})` configurations. Flat `fetch(url, {...})` options can
+likewise contain other literal options before the method field.
+
+These are **passive annotations**, not requests. Dynamic expressions and
+out-of-origin URLs are not promoted into new scanner actions. Routes
+requiring JavaScript execution or nested dynamic configs still require
+manual review.
+
 ### Non-GET API routes and minified bundle hints
 
 The scanner now records informational route hints in JavaScript files it
