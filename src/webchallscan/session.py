@@ -132,24 +132,45 @@ class _WebSocket:
         self.sock.sendall(bytes(header) + mask + encoded)
 
     def recv_json(self) -> dict[str, Any]:
+        # Local debugging ports can still be occupied by untrusted services.
+        # Validate each announced frame size *before* allocating/reading it.
+        max_frame = 2_000_000
         while True:
             first, second = self._exact(2)
             opcode, length = first & 0x0F, second & 0x7F
+            complete = bool(first & 0x80)
+            if first & 0x70:
+                raise SessionCaptureError("CDP WebSocket uses unsupported frame extensions")
+            if second & 0x80:
+                raise SessionCaptureError("CDP WebSocket server frames must be unmasked")
             if length == 126:
                 length = struct.unpack("!H", self._exact(2))[0]
             elif length == 127:
                 length = struct.unpack("!Q", self._exact(8))[0]
-            mask = self._exact(4) if second & 0x80 else b""
+            if length > max_frame:
+                raise SessionCaptureError("CDP WebSocket frame exceeds the 2 MB limit")
+            if opcode in (0x8, 0x9, 0xA):
+                if not complete or length > 125:
+                    raise SessionCaptureError("invalid CDP WebSocket control frame")
+            elif opcode != 0x1 or not complete:
+                # A fragmented or binary frame must not silently be processed
+                # as JSON; CDP's JSON-RPC transport uses complete text frames.
+                raise SessionCaptureError("unsupported CDP WebSocket data frame")
             data = self._exact(length)
-            if mask:
-                data = bytes(value ^ mask[index % 4] for index, value in enumerate(data))
             if opcode == 0x8:
                 raise SessionCaptureError("CDP WebSocket closed unexpectedly")
             if opcode == 0x9:
                 self._send_control(0xA, data)
                 continue
-            if opcode == 0x1:
-                return json.loads(data.decode("utf-8"))
+            if opcode == 0xA:
+                continue
+            try:
+                message = json.loads(data.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise SessionCaptureError("invalid CDP WebSocket JSON response") from exc
+            if not isinstance(message, dict):
+                raise SessionCaptureError("CDP WebSocket JSON response must be an object")
+            return message
 
     def _send_control(self, opcode: int, data: bytes) -> None:
         mask = os.urandom(4)
