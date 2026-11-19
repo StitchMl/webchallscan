@@ -25,7 +25,7 @@ def test_audit_does_not_return_values_or_secrets():
     assert "PRIVATE" not in repr(report)
     assert "private@example.com" not in repr(report)
     assert "SECRET-KEY-ID" not in repr(report)
-    assert "signature" not in repr(report)
+    assert "c2lnbmF0dXJl" not in repr(report)  # raw base64url signature bytes
 
 
 def test_hmac_is_review_not_claimed_crack():
