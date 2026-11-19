@@ -5,6 +5,8 @@ are retained; all signals are configuration observations, not exploit proofs.
 """
 from __future__ import annotations
 
+from .jwt_audit import audit_jwt
+
 
 def inspect_response(method: str, path: str, resource_type: str,
                      status: int, headers: dict[str, str],
@@ -70,4 +72,38 @@ def inspect_response(method: str, path: str, resource_type: str,
         ) and "secure" not in attr_names:
             add_cookie("COOKIE-SAMESITE-NONE", "SameSite=None cookie lacks Secure", "low",
                        "SameSite=None appears without Secure; modern browsers may reject the cookie")
+        # JWT signals are based solely on structure observed in existing
+        # Set-Cookie headers. Never include cookie names, token values,
+        # signatures, custom claim names, or arbitrary header values.
+        value = first.split("=", 1)[1].strip().strip('"')
+        if 0 < len(value) <= 4096 and value.count(".") == 2:
+            try:
+                audit = audit_jwt(value)
+            except ValueError:
+                continue
+            known = {signal["rule"] for signal in audit["signals"]}
+            if "JWT-ALG-NONE" in known:
+                add_cookie(
+                    "COOKIE-JWT-ALG-NONE", "JWT cookie declares unsecured algorithm",
+                    "low", "Observed a compact JWT cookie declaring alg=none; "
+                           "server acceptance and authentication bypass are unverified.",
+                )
+            if "JWT-KEY-REFERENCE" in known:
+                add_cookie(
+                    "COOKIE-JWT-KEY-REFERENCE", "JWT cookie includes key-reference metadata",
+                    "info", "Observed a JWT key-selection/retrieval header; "
+                            "header values and cookie contents are omitted.",
+                )
+            if "JWT-HMAC-REVIEW" in known:
+                add_cookie(
+                    "COOKIE-JWT-HMAC-REVIEW", "JWT cookie uses HMAC algorithm",
+                    "info", "Observed HMAC algorithm metadata in a JWT cookie; "
+                            "key strength and signature validity were not tested.",
+                )
+            if "JWT-AUTHORIZATION-CLAIMS" in known:
+                add_cookie(
+                    "COOKIE-JWT-AUTHZ-CLAIMS", "JWT cookie includes authorization-related claims",
+                    "info", "Observed authorization or identity claim categories "
+                            "in a JWT cookie; claim names and values are omitted.",
+                )
     return out
