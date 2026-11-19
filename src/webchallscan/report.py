@@ -44,9 +44,25 @@ def _use_color(mode: str) -> bool:
 
 
 def render_text(report: ScanReport, color: str = "auto",
-                verbose: bool = False) -> str:
+                verbose: bool = False, *,
+                top: int | None = None, min_severity: str = "info") -> str:
     """Display actionable scan triage with detailed evidence on demand."""
     paint = _use_color(color)
+    if min_severity not in ORDER:
+        raise ValueError("invalid minimum severity")
+    if top is not None and not 1 <= top <= 1000:
+        raise ValueError("--top must be 1-1000")
+    limit = top if top is not None else (None if verbose else 20)
+    cutoff = ORDER.index(min_severity)
+    eligible = [item for item in report.findings
+                if ((item.severity.lower() not in ORDER and min_severity == "info")
+                    or (item.severity.lower() in ORDER
+                        and ORDER.index(item.severity.lower()) <= cutoff))]
+    filtered = sorted(eligible, key=lambda item: (
+        ORDER.index(item.severity.lower()) if item.severity.lower() in ORDER else len(ORDER)
+    ))
+    visible = filtered[:limit] if limit is not None else filtered
+    hidden = len(report.findings) - len(visible)
     width = max(62, min(108, shutil.get_terminal_size(fallback=(88, 24)).columns))
     separator = "-" * min(width, 88)
 
@@ -88,9 +104,11 @@ def render_text(report: ScanReport, color: str = "auto",
             "This does not prove the target is safe.",
         ])
     else:
+        if not visible:
+            lines.extend(["", c("No findings match the selected severity filter.", "muted")])
         groups = {severity: [] for severity in ORDER}
         other = []
-        for item in report.findings:
+        for item in visible:
             groups.get(item.severity.lower(), other).append(item)
         for severity in ORDER + ("other",):
             items = groups[severity] if severity in groups else other
@@ -132,6 +150,12 @@ def render_text(report: ScanReport, color: str = "auto",
                                        and item.recovery_payload else "not proven"))
                 elif item.proof_payload:
                     lines.extend(field("Proof", replay["proof_payload"]))
+        if hidden:
+            lines.extend(["", c(
+                f"{hidden} finding detail(s) omitted by the display limit or severity filter. "
+                "Use --verbose, --top or --min-severity to adjust the view.",
+                "medium",
+            )])
         if not verbose:
             lines.extend(["", c("Tip: use --verbose for replay, vectors and full verification details.", "muted")])
 
