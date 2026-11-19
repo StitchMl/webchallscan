@@ -231,6 +231,19 @@ Token bytes, cookie names, claim values and signatures are **not** included
 in findings. No extra requests or signature verification are performed.
 This is informational metadata only; it is not an authentication bypass.
 
+### Passive JWT signals in individual Set-Cookie headers
+
+In addition to the existing JWT hints from response text and the crawler's
+cookie jar, each received `Set-Cookie` header is now checked for well-formed
+compact JWT metadata. This also works in **offline Burp XML import**, even
+if the original cookie could not be stored in the scanner jar. Only fixed
+review categories are emitted: unsecured algorithm declaration, key-reference
+headers, HMAC algorithm and authorization/identity claim categories.
+
+Cookie names, raw tokens, signatures, arbitrary claim names, header values and
+claim values are never output. These are low/informational review hints, not
+proof that the server accepts modified tokens. No extra requests are sent.
+
 ### Offline session cookie format review
 
 A session JSON file captured from the browser extension, CDP or an explicitly
