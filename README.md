@@ -252,6 +252,11 @@ Fields in arrays, dynamic keys and deeply nested objects are not inferred.
 The summary view (`--human`) shows a per-endpoint JSON-field count.
 The JSON inventory includes optional `json_fields` arrays of field paths.
 
+Run `--plan-inventory` on the redacted inventory to carry these validated
+paths into optional `json_field_paths` review entries and a
+`manual-json-body-field-review` checklist. The human plan view displays
+the number of fields; no JSON values or active payloads are generated.
+
 These are **manual review candidates**, not executable test cases.
 The existing `--check-json-cases` command still requires an independently
 prepared file and explicit `--authorized --active` approval. No captured
