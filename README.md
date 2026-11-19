@@ -103,6 +103,15 @@ browser-session capture against malformed data on a local debugging port.
 CDP uses complete JSON text frames; binary and fragmented frames are
 unsupported. No scanning request limits or target behavior change.
 
+### Session cookie input safety
+
+Session-file and browser-extension cookies now share strict validation of
+cookie names, printable value bytes, domains, paths and boolean security
+attributes before they enter the HTTP cookie jar. The same checks apply to
+sessions constructed in Python directly. Invalid, oversized or header-
+injecting cookies are rejected without sending requests. Existing safe,
+scoped cookies still work normally; values are never printed in errors.
+
 ### Current browser session
 
 For a normally opened Chrome or Edge window, load the bundled unpacked
