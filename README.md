@@ -153,6 +153,23 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Offline session cookie format review
+
+A session JSON file captured from the browser extension, CDP or an explicitly
+created Burp session can be audited without contacting the target:
+
+```bash
+webchallscan --audit-session-file session.json
+```
+
+This reports only **aggregate categories**: JWT-like, signed-cookie-like,
+Hex/Base64-shaped and JSON-like encoded values. For JWT-shaped cookies, the
+existing offline JWT audit flags algorithm/key/authorization-claim review
+indicators. Cookie names, values, signatures, raw decoded content and claim
+values are never returned. Format heuristics do not identify the actual
+framework, break signatures or prove a vulnerability. Protect the original
+session file and delete it after use.
+
 ### Offline JWT metadata audit
 
 Store a JWT from an authorized test in a private local file and run:
