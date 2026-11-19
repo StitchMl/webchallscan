@@ -65,9 +65,10 @@ def test_import_requires_valid_expected_origin(tmp_path):
     file.write_text(_xml("HTTP/1.1 200 OK\r\n\r\n"))
     with pytest.raises(ValueError):
         import_burp_xml(str(file), "file:///etc/passwd")
-    report = import_burp_xml(str(file), "https://other.example")
-    assert report["observed_requests"] == 1
-    assert report["origin"] == "https://other.example"
+    with pytest.raises(ValueError, match="no matching items"):
+        import_burp_xml(str(file), "https://other.example")
+    report = import_burp_xml(str(file), "https://lab.example")
+    assert report["observed_requests"] == 2
 
 
 def test_cli_burp_mode_is_offline_and_requires_authorization(tmp_path, capsys):
