@@ -331,17 +331,22 @@ def load_session_file(path: str) -> BrowserSession:
     # the workspace. Limit bytes read and reject symlinks/non-regular files.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        candidate = Path(path)
-        # The explicit session import is confined to the invoking workspace.
-        # An LLM-supplied CLI argument must not access other local secrets.
-        if candidate.is_symlink():
-            raise SessionCaptureError("session input must be a regular file")
-        file = candidate.resolve(strict=True)
+        workspace = Path.cwd().resolve()
+        supplied = Path(path)
+        # Restrict CLI-controlled paths to one validated filename in cwd.
+        # No parent components or traversal syntax can reach the open call.
         try:
-            file.relative_to(Path.cwd().resolve())
+            relative = supplied.relative_to(workspace) if supplied.is_absolute() else supplied
         except ValueError as exc:
             raise SessionCaptureError("session file must be inside the working directory") from exc
-        if not file.is_file():
+        filename = relative.name
+        if (len(relative.parts) != 1 or not isinstance(filename, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json", filename)
+                or ".." in filename):
+            raise SessionCaptureError("session file must be a simple JSON filename in the working directory")
+        file = workspace / filename
+        if file.is_symlink() or not file.is_file():
+            raise SessionCaptureError("session input must be a regular file")
             raise SessionCaptureError("session input must be a regular file")
         fd = os.open(file, flags)
         with os.fdopen(fd, "rb") as stream:
