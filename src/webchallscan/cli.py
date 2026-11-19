@@ -13,6 +13,7 @@ from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
 from .burp_session import export_burp_session
+from .cookie_audit import audit_session_file
 from .jwt_audit import audit_jwt_file
 from .json_checks import load_json_cases, run_json_cases
 from .network import observe_cdp
@@ -57,6 +58,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--burp-session-out", metavar="JSON", help="exclusive new private session-file path")
     p.add_argument("--allow-secret-export", action="store_true", help="acknowledge the new session file contains live cookie values")
     p.add_argument("--audit-jwt-file", metavar="FILE", help="offline JWT structure and metadata audit without printing token values")
+    p.add_argument("--audit-session-file", metavar="JSON", help="offline aggregate cookie encoding and JWT audit for existing session JSON")
     p.add_argument("--from-inventory", metavar="JSON", help="seed scan with same-origin GET routes from redacted inventory")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
@@ -131,9 +133,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file or args.check_json_cases or args.burp_session_from):
+                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file or args.audit_session_file or args.check_json_cases or args.burp_session_from):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
+    if args.audit_session_file is not None:
+        if (args.url or args.quick or args.active or args.cdp or args.browser_session
+                or args.session_file or args.listen_session or args.observe_network is not None
+                or args.plan_inventory or args.import_burp or args.burp_session_from
+                or args.burp_session_out or args.allow_secret_export
+                or args.check_json_cases or args.validate_api_contract or args.check_api_cases
+                or args.audit_jwt_file or args.from_inventory or args.burp_procedure
+                or args.burp_raw or args.include_session_secrets or args.export_curl
+                or args.export_python or args.expect_origin or args.nosql_query):
+            print("error: --audit-session-file is an exclusive offline mode", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(audit_session_file(args.audit_session_file), indent=2))
+            return 0
+        except (ValueError, OSError, UnicodeError):
+            print("error: session-format audit failed: invalid input file", file=sys.stderr)
+            return 2
     if args.burp_session_from is not None:
         if (not args.authorized or not args.allow_secret_export or
                 not args.expect_origin or not args.burp_session_out or args.url
