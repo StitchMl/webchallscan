@@ -63,7 +63,8 @@ def _preflight_contract_cases(cases: list, roles: dict) -> None:
             raise ValueError("only bounded non-secret query values are accepted")
         if kind == "idor":
             owner, outsider = case.get("owner"), case.get("outsider")
-            if owner == outsider or owner not in roles or outsider not in roles:
+            if (not isinstance(owner, str) or not isinstance(outsider, str)
+                    or owner == outsider or owner not in roles or outsider not in roles):
                 raise ValueError("IDOR needs distinct, known owner and outsider roles")
             denied = case.get("denied_statuses", [401, 403, 404])
             if (not isinstance(denied, list) or not denied or
@@ -76,11 +77,12 @@ def _preflight_contract_cases(cases: list, roles: dict) -> None:
                 raise ValueError("invalid expected marker")
         elif kind == "fuzz":
             role, field = case.get("role"), case.get("parameter")
-            if role not in roles or not isinstance(field, str) or field not in query:
+            if not isinstance(role, str) or role not in roles or not isinstance(field, str) or field not in query:
                 raise ValueError("fuzz case needs an existing query parameter and role")
         elif kind == "business":
             role, expected = case.get("role"), case.get("expected_statuses")
-            if (role not in roles or not isinstance(expected, list) or not expected
+            if (not isinstance(role, str) or role not in roles
+                    or not isinstance(expected, list) or not expected
                     or any(type(code) is not int or not 100 <= code <= 599
                            for code in expected)):
                 raise ValueError("business case requires explicit role and expected statuses")
