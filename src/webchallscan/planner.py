@@ -11,6 +11,29 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
+_FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}\\Z")
+_PRIVATE_FIELD = re.compile(
+    r"password|passwd|secret|token|csrf|xsrf|auth|cookie|session|"
+    r"key|bearer|credential|otp|nonce|signature|private", re.I,
+)
+
+
+def _safe_json_field_paths(candidate_fields: object) -> list[list[str]]:
+    """Validate metadata paths only; never accept secret-bearing field names."""
+    if not isinstance(candidate_fields, list) or len(candidate_fields) > 12:
+        raise ValueError("invalid JSON field hints")
+    result = []
+    for names in candidate_fields:
+        if not isinstance(names, list) or not 1 <= len(names) <= 5:
+            raise ValueError("invalid nested JSON field hints")
+        for name in names:
+            if (not isinstance(name, str) or not _FIELD.fullmatch(name)
+                    or _PRIVATE_FIELD.search(name)):
+                raise ValueError("unsafe JSON field name")
+        result.append(names)
+    return result
+
+
 def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
     if data.get("schema") != "webchallscan/network-inventory-v1":
         raise ValueError("unsupported inventory schema")
@@ -38,23 +61,7 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
         resource_type = entry.get("type", "Other")
         # Retain *names only* from the already-redacted inventory.
         # Untrusted inventory files cannot inject raw JSON values into plans.
-        candidate_fields = entry.get("json_fields", [])
-        if not isinstance(candidate_fields, list) or len(candidate_fields) > 12:
-            raise ValueError("invalid JSON field hints")
-        fields = []
-        for names in candidate_fields:
-            if not isinstance(names, list) or not 1 <= len(names) <= 5:
-                raise ValueError("invalid nested JSON field hints")
-            if not all(isinstance(name, str)
-                       and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", name)
-                       and not re.search(
-                           r"password|passwd|secret|token|csrf|xsrf|auth|cookie|"
-                           r"session|key|bearer|credential|otp|nonce|signature|private",
-                           name, re.I,
-                       )
-                       for name in names):
-                raise ValueError("unsafe JSON field name")
-            fields.append(names)
+        fields = _safe_json_field_paths(entry.get("json_fields", []))
         categories = ["response-header-review"]
         if fields and method == "POST":
             categories.append("manual-json-body-field-review")
