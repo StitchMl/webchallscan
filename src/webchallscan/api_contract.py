@@ -21,9 +21,9 @@ from .http_client import NoRedirect, api_handlers, read_bounded
 ALLOWED_HEADERS = {"authorization", "cookie", "x-api-key"}
 PROBES = ("", "WCS_TEST_0123", "0", "-1", "a" * 64)
 
-def _fetch(url, headers, timeout, *, verify_tls=True):
+def _fetch(url, headers, timeout, *, verify_tls=True, proxy=None):
     request = Request(url, method="GET", headers={**headers, "Accept": "application/json"})
-    handlers = api_handlers(verify_tls=verify_tls)
+    handlers = api_handlers(verify_tls=verify_tls, proxy=proxy)
     response = read_bounded(build_opener(*handlers), request, timeout, 65537)
     raw, status = response.body, response.status
     if len(raw) > 65536:
@@ -48,7 +48,7 @@ def _validate_path(value):
 def _public(response):
     return {k: response[k] for k in ("status", "length", "digest")}
 
-def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True):
+def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True, proxy=None):
     """Run explicit low-impact GET contracts. Maximum 30 HTTP requests."""
     if not isinstance(data, dict) or data.get("schema") != "webchallscan/api-contract-v1":
         raise ValueError("invalid API contract schema")
@@ -72,8 +72,11 @@ def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True):
                     if isinstance(case, dict) else 31 for case in cases)
     if estimated > 30:
         raise ValueError("request budget would exceed 30; split the contract")
+    # Reject unsafe proxy settings even when an injected test transport is used.
+    from .http_client import validate_loopback_proxy
+    validate_loopback_proxy(proxy)
     client = fetch or (lambda url, headers, timeout: _fetch(
-        url, headers, timeout, verify_tls=verify_tls))
+        url, headers, timeout, verify_tls=verify_tls, proxy=proxy))
     requests = 0
     findings, results = [], []
     for index, case in enumerate(cases):
