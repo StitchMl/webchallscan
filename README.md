@@ -145,6 +145,15 @@ validate signatures, try signing keys or claim that the server accepts a
 modified token. Keep the input file private and delete it after review.
 Unlike network scanning, this offline operation needs no `--authorized` flag.
 
+### Passive source-comment hints
+
+HTML comments on visited pages and line/block comments in JavaScript files
+already fetched by the crawler are inspected for review keywords such as
+`TODO`, `FIXME`, `SECRET`, `PASSWORD`, `ADMIN`, and `DEBUG`.
+Only keyword **categories** are included in the report; the comment text
+and possible secrets are never copied to findings. These are informational
+hints, not confirmed vulnerabilities. No additional network requests occur.
+
 ### Passive JavaScript source-map hints
 
 When the crawler already fetches same-origin JavaScript assets linked from HTML,
