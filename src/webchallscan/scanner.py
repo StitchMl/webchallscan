@@ -8,7 +8,7 @@ from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
 from http.cookiejar import Cookie, CookieJar
-from urllib.error import HTTPError, URLError
+from urllib.error import URLError
 from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import (
     HTTPCookieProcessor,
@@ -19,6 +19,7 @@ from urllib.request import (
     build_opener,
 )
 
+from .http_client import read_bounded
 from .model import Finding, ScanReport, redact_url
 from .posture import inspect_response
 from .session import BrowserSession
@@ -243,14 +244,12 @@ class Scanner:
         if data is not None:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         req = Request(url, data=data, method=method, headers=headers)
-        try:
-            with self.opener.open(req, timeout=self.timeout) as res:
-                raw = res.read(MAX_BODY)
-                charset = res.headers.get_content_charset() or "utf-8"
-                return Response(res.geturl(), res.status, {k.lower(): v for k, v in res.headers.items()}, raw.decode(charset, "replace"))
-        except HTTPError as exc:
-            raw = exc.read(MAX_BODY)
-            return Response(url, exc.code, {k.lower(): v for k, v in exc.headers.items()}, raw.decode("utf-8", "replace"))
+        result = read_bounded(self.opener, req, self.timeout, MAX_BODY)
+        charset = ("utf-8" if result.http_error else
+                   (result.headers.get_content_charset() or "utf-8"))
+        return Response(result.url, result.status,
+                        {k.lower(): v for k, v in result.headers.items()},
+                        result.body.decode(charset, "replace"))
 
     def _finding(self, **kwargs: object) -> Finding:
         kwargs.setdefault("profile", self.profile)
