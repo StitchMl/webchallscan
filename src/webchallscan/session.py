@@ -224,7 +224,7 @@ def validate_session_cookie(name: str, value: str,
     if not isinstance(name, str) or not _COOKIE_NAME.fullmatch(name):
         raise SessionCaptureError("invalid cookie name")
     if (not isinstance(value, str) or len(value) > 4096
-            or any(ord(ch) < 32 or ord(ch) == 127 or ch == ";" for ch in value)):
+            or any(ord(ch) < 32 or ord(ch) > 126 or ch == ";" for ch in value)):
         raise SessionCaptureError("invalid cookie value")
     if (not isinstance(domain, str)
             or (domain and (not _COOKIE_DOMAIN.fullmatch(domain)
@@ -232,7 +232,7 @@ def validate_session_cookie(name: str, value: str,
         raise SessionCaptureError("invalid cookie domain")
     if (not isinstance(path, str) or not path.startswith("/")
             or len(path) > 2048
-            or any(ord(ch) < 32 or ord(ch) == 127 or ch == ";" for ch in path)):
+            or any(ord(ch) < 32 or ord(ch) > 126 or ch == ";" for ch in path)):
         raise SessionCaptureError("invalid cookie path")
 
 
