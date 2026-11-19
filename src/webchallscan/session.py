@@ -215,7 +215,7 @@ def _valid_http_url(value: object) -> str:
 
 
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
-_COOKIE_DOMAIN = re.compile(r"^\\.?[A-Za-z0-9.-]{1,253}$")
+_COOKIE_DOMAIN = re.compile(r"^\.?[A-Za-z0-9.-]{1,253}$")
 
 
 def validate_session_cookie(name: str, value: str,
