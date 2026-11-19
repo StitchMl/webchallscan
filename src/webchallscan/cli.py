@@ -23,6 +23,7 @@ from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
 from .snippets import render_snippets
+from .source_map_audit import audit_source_map_file
 from .structured_report import render_structured_text
 from .session import (
     BrowserSession,
@@ -63,6 +64,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-secret-export", action="store_true", help="acknowledge the new session file contains live cookie values")
     p.add_argument("--audit-jwt-file", metavar="FILE", help="offline JWT structure and metadata audit without printing token values")
     p.add_argument("--audit-session-file", metavar="JSON", help="offline aggregate cookie encoding and JWT audit for existing session JSON")
+    p.add_argument("--audit-source-map-file", metavar="MAP", help="offline bounded source-map v3 audit without disclosing source paths/content")
     p.add_argument("--from-inventory", metavar="JSON", help="seed scan with same-origin GET routes from redacted inventory")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
@@ -133,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.format == "markdown" and (
             args.quick or args.observe_network is not None or args.plan_inventory
             or args.import_burp or args.burp_session_from or args.audit_jwt_file
-            or args.audit_session_file or args.validate_api_contract
+            or args.audit_session_file or args.audit_source_map_file or args.validate_api_contract
             or args.check_api_cases or args.check_json_cases
             or args.burp_procedure or args.export_curl or args.export_python):
         print("error: --format markdown applies only to scanner reports", file=sys.stderr)
@@ -145,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             args.format == "json" or args.human or args.quick
             or args.observe_network is not None or args.plan_inventory
             or args.import_burp or args.burp_session_from
-            or args.audit_jwt_file or args.audit_session_file
+            or args.audit_jwt_file or args.audit_session_file or args.audit_source_map_file
             or args.validate_api_contract or args.check_api_cases
             or args.check_json_cases or args.burp_procedure
             or args.export_curl or args.export_python):
@@ -172,9 +174,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.import_burp or args.audit_jwt_file or args.audit_session_file or args.burp_session_from):
+                       args.import_burp or args.audit_jwt_file or args.audit_session_file or args.audit_source_map_file or args.burp_session_from):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
+    if args.audit_source_map_file is not None:
+        if (args.url or args.quick or args.active or args.cdp or args.browser_session
+                or args.session_file or args.listen_session or args.observe_network is not None
+                or args.plan_inventory or args.import_burp or args.burp_session_from
+                or args.burp_session_out or args.allow_secret_export
+                or args.burp_session_path is not None or args.burp_session_index is not None
+                or args.check_json_cases or args.validate_api_contract or args.check_api_cases
+                or args.audit_jwt_file or args.audit_session_file or args.from_inventory
+                or args.burp_procedure or args.burp_raw or args.include_session_secrets
+                or args.export_curl or args.export_python or args.expect_origin
+                or args.nosql_query or args.ssti_alternates or args.proxy or args.insecure):
+            print("error: --audit-source-map-file is an exclusive offline mode", file=sys.stderr)
+            return 2
+        try:
+            print(_format_result(audit_source_map_file(args.audit_source_map_file), indent=2))
+            return 0
+        except (ValueError, OSError, UnicodeError):
+            print("error: source-map audit failed: invalid or oversized input file", file=sys.stderr)
+            return 2
     if args.audit_session_file is not None:
         if (args.url or args.quick or args.active or args.cdp or args.browser_session
                 or args.session_file or args.listen_session or args.observe_network is not None
