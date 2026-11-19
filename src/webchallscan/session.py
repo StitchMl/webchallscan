@@ -331,7 +331,13 @@ def load_session_file(path: str) -> BrowserSession:
     # the workspace. Limit bytes read and reject symlinks/non-regular files.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags)
+        candidate = Path(path)
+        if candidate.is_symlink():
+            raise SessionCaptureError("session input must be a regular file")
+        file = candidate.resolve(strict=True)
+        if not file.is_file():
+            raise SessionCaptureError("session input must be a regular file")
+        fd = os.open(file, flags)
         with os.fdopen(fd, "rb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise SessionCaptureError("session input must be a regular file")
