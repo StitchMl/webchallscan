@@ -35,3 +35,25 @@ def test_cors_conflict_is_configuration_note_not_exploit_confirmation():
     }, True)
     assert [x["rule"] for x in out] == ["HEADER-CORS-CONFLICT"]
     assert out[0]["severity"] == "low"
+
+def test_cookie_attribute_observations_never_include_secrets():
+    out = inspect_response("GET", "/login", "Other", 200, {
+        "Set-Cookie": "session=ULTRASECRET; Path=/; SameSite=None",
+    }, True)
+    assert {f["rule"] for f in out} == {
+        "COOKIE-SECURE", "COOKIE-HTTPONLY", "COOKIE-SAMESITE-NONE",
+    }
+    assert "ULTRASECRET" not in repr(out)
+    assert "session" not in repr(out).lower()
+
+
+def test_cookie_flags_are_context_sensitive_and_non_session_values_not_retained():
+    out = inspect_response("GET", "/", "Document", 200, {
+        "Set-Cookie": "theme=dark; Path=/; Secure; HttpOnly; SameSite=Lax",
+    }, True)
+    assert not any(f["rule"].startswith("COOKIE-") for f in out)
+    out = inspect_response("GET", "/", "Other", 200, {
+        "Set-Cookie": "session=SECRET; Path=/",
+    }, False)
+    assert {f["rule"] for f in out} == {"COOKIE-HTTPONLY", "COOKIE-SAMESITE"}
+    assert "SECRET" not in repr(out)
