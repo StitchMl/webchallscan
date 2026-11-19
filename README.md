@@ -157,6 +157,18 @@ Alternate-engine matches are validation-only observations that require
 manual confirmation of the engine and exploitability. The extra probes are
 **off by default** to preserve current request-budget priorities and scan results.
 
+### Passive session cookie attributes
+
+The existing response-header posture checks also inspect `Set-Cookie`
+attributes for missing `Secure` on HTTPS, `HttpOnly`, and `SameSite`,
+including the incompatible combination `SameSite=None` without `Secure`.
+Cookie **names and values are never reported**, and these checks are
+configuration hints rather than a claim that a cookie contains a session.
+Imported Burp XML exports are also examined without extra requests.
+When multiple Set-Cookie header lines are collapsed by a source, only the
+available header value can be inspected; absence of a signal is not proof
+of a safe session configuration.
+
 ### HTTP metadata and explicit GET JavaScript discovery
 
 Existing `HEAD` and `OPTIONS` responses now produce informational notes
