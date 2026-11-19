@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 MAX_BYTES = 2_000_000
 MAX_SOURCES = 500
@@ -69,11 +71,39 @@ def audit_source_map(data: object) -> dict:
 
 
 def audit_source_map_file(path: str) -> dict:
-    file = Path(path)
-    if file.stat().st_size > MAX_BYTES:
+    """Read a regular local map inside the working tree, never arbitrary paths.
+
+    Source maps are untrusted input. Limit path scope and actual bytes read,
+    rather than trusting stat() followed by an unbounded read_text().
+    """
+    if not isinstance(path, str) or not path or "\\x00" in path:
+        raise ValueError("invalid source-map file path")
+    trusted_root = Path.cwd().resolve()
+    try:
+        candidate = Path(path).resolve(strict=True)
+        candidate.relative_to(trusted_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("source-map file must be inside the working directory") from exc
+    if candidate.suffix.lower() != ".map":
+        raise ValueError("source-map file must have a .map extension")
+    if not candidate.is_file():
+        raise ValueError("source-map input must be a regular file")
+    # The post-open fstat remains essential against file replacement races.
+    # Never follow a final symlink during open, even if swapped after resolve.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(candidate, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("source-map input must be a regular file")
+            raw = stream.read(MAX_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("cannot read source-map file") from exc
+    if len(raw) > MAX_BYTES:
         raise ValueError("source-map file exceeds 2 MB")
     try:
-        data = json.loads(file.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError("invalid source-map JSON file") from exc
     return audit_source_map(data)

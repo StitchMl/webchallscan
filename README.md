@@ -502,8 +502,11 @@ webchallscan --audit-source-map-file ./app.js.map
 webchallscan --audit-source-map-file ./app.js.map --human --color always
 ```
 
-The bounded local decoder supports Source Map v3 (2 MB file, up to 500
-source entries) and reports only aggregate file-extension categories,
+The bounded local decoder accepts only regular `.map` files inside the
+current working directory (including its subdirectories), rejecting paths
+outside that scope and symlinks that escape it. Change into the directory
+containing the map first if needed. It supports Source Map v3 (2 MB file,
+up to 500 source entries) and reports only aggregate file-extension categories,
 embedded source counts and review keyword categories. It deliberately
 omits filenames, source paths, sourceRoot, source content and all other
 arbitrary values. A source-map URL hint is not proof of accessibility;
