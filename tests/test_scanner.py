@@ -535,3 +535,42 @@ def test_nosql_query_budget_and_cli_mode_restrictions(server, capsys):
                      nosql_query=True, max_pages=1, max_requests=3).scan()
     assert report.requests_sent == 3
     assert not any(f.rule == "WEB-NOSQL-REVIEW-001" for f in report.findings)
+
+def test_nonget_js_routes_are_only_informational_hints(server):
+    from webchallscan.scanner import Response
+    source = """
+    axios.post('/api/write?token=PRIVATE', {v: 1});
+    axios.delete('/api/remove');
+    fetch('/admin/apply', {method: 'PATCH', body: '{}'});
+    $.ajax({url: '/v1/delete', type: 'DELETE'});
+    var x="/internal/health";
+    axios.post('https://elsewhere.example/attack');
+    """
+    scanner = Scanner(server)
+    hints = scanner._js_api_findings(Response(server + "/app.js", 200,
+        {"content-type": "application/javascript"}, source))
+    pairs = {(f.method, f.url.split("?")[0]) for f in hints}
+    assert pairs == {
+        ("POST", server + "/api/write"),
+        ("DELETE", server + "/api/remove"),
+        ("PATCH", server + "/admin/apply"),
+        ("DELETE", server + "/v1/delete"),
+        ("UNKNOWN", server + "/internal/health"),
+    }
+    assert all(f.severity == "info" and f.exploit_status == "validation-only"
+               for f in hints)
+    assert "PRIVATE" not in repr([f.to_dict() for f in hints])
+    assert scanner.requests_sent == 0
+    assert not any("/api/write" in path for path in
+                   Scanner._static_get_routes(source))
+
+
+def test_nonget_js_hints_ignore_dynamic_and_external_routes(server):
+    from webchallscan.scanner import Response
+    scanner = Scanner(server)
+    hints = scanner._js_api_findings(Response(
+        server + "/app.js", 200, {},
+        "axios.post(`/api/${id}`); axios.post('https://evil.example/');"
+        "fetch('/api/write', {method: 'POST'});"
+    ))
+    assert [f.url for f in hints] == [server + "/api/write"]
