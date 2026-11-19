@@ -197,6 +197,20 @@ validate signatures, try signing keys or claim that the server accepts a
 modified token. Keep the input file private and delete it after review.
 Unlike network scanning, this offline operation needs no `--authorized` flag.
 
+### Inspect authorized API checks through local Burp
+
+API contract validation, role-comparison checks and explicit JSON cases
+support the same opt-in loopback `--proxy` setting as the crawler.
+The API clients continue to reject HTTP redirects, retain their existing
+request/response size caps, and verify TLS unless `--insecure` is explicitly
+passed. No credentials are written to results. Use only a trusted local Burp
+instance: proxy traffic can include live Authorization and Cookie headers.
+
+```bash
+webchallscan --authorized --validate-api-contract contract.json --proxy http://127.0.0.1:8080
+webchallscan --authorized --active --check-json-cases cases.json --proxy http://127.0.0.1:8080
+```
+
 ### Explicit JSON API validation (opt-in active POST)
 
 JSON APIs may be tested through an operator-authored case file. This mode
@@ -527,7 +541,7 @@ The default `--profile both` runs isolated desktop and mobile scans with separat
 
 Useful controls:
 
-To inspect scan traffic in Burp Suite Community, run `webchallscan https://challenge.example/ --authorized --proxy http://127.0.0.1:8080`. The optional `--proxy` accepts **only** an unauthenticated loopback HTTP proxy and applies to scanner requests, not offline inventory or API contract modes. Configure Burp to listen at that address. For HTTPS interception, trust Burp's CA in a dedicated test environment or explicitly opt into `--insecure` for disposable authorized challenges. Environment `NO_PROXY` can cause urllib to bypass the proxy for local targets; adjust it for your lab.
+To inspect scan traffic in Burp Suite Community, run `webchallscan https://challenge.example/ --authorized --proxy http://127.0.0.1:8080`. The optional `--proxy` accepts **only** an unauthenticated loopback HTTP proxy and applies to scanner, `--validate-api-contract`, `--check-api-cases`, and explicit `--check-json-cases` requests. It does not apply to offline inventory or audit modes. Configure Burp to listen at that address. For HTTPS interception, trust Burp's CA in a dedicated test environment or explicitly opt into `--insecure` for disposable authorized challenges. Environment `NO_PROXY` can cause urllib to bypass the proxy for local targets; adjust it for your lab.
 
 
 
