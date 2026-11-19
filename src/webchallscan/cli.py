@@ -13,7 +13,7 @@ from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
 from .network import observe_cdp
-from .planner import load_inventory, plan_inventory
+from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
@@ -46,6 +46,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
     p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
     p.add_argument("--import-burp", metavar="XML", help="offline redacted inventory from a Burp Suite XML HTTP history export")
+    p.add_argument("--from-inventory", metavar="JSON", help="seed scan with same-origin GET routes from redacted inventory")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         if (not args.authorized or args.url or args.active or args.cdp or args.browser_session
                 or args.session_file or args.listen_session or args.quick
                 or args.observe_network is not None or args.plan_inventory
-                or args.validate_api_contract or args.check_api_cases
+                or args.validate_api_contract or args.check_api_cases or args.from_inventory
                 or args.include_session_secrets or args.burp_procedure):
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
             return 2
@@ -105,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: Burp XML import failed: {exc}", file=sys.stderr)
             return 2
     if args.quick:
-        if not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
+        if args.from_inventory or not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
             print("error: --quick requires --authorized --cdp and no other scan mode", file=sys.stderr)
             return 2
         try:
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: quick discovery failed; check the focused CDP tab", file=sys.stderr)
             return 2
     if args.validate_api_contract is not None:
-        if not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory or args.check_api_cases:
+        if args.from_inventory or not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory or args.check_api_cases:
             print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
             return 2
         try:
@@ -139,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
             return 2
     if args.check_api_cases is not None:
-        if not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory:
+        if args.from_inventory or not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory:
             print("error: --check-api-cases requires --authorized and excludes browser/scan modes", file=sys.stderr)
             return 2
         try:
@@ -149,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)
             return 2
     if args.plan_inventory is not None:
-        if not args.authorized or args.observe_network is not None or args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
+        if args.from_inventory or not args.authorized or args.observe_network is not None or args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
             print("error: --plan-inventory requires --authorized and cannot be combined with a browser source", file=sys.stderr)
             return 2
         try:
@@ -162,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --expect-origin only applies to --plan-inventory", file=sys.stderr)
         return 2
     if args.observe_network is not None:
-        if not args.authorized:
+        if args.from_inventory or not args.authorized:
             print("error: --authorized is required", file=sys.stderr)
             return 2
         if not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
@@ -217,16 +218,17 @@ def main(argv: list[str] | None = None) -> int:
                     url=captured.url, cookies=captured.cookies, headers=(), profile=other,
                     source=captured.source + "-cookie-clone",
                 )
+        inventory_urls = inventory_get_urls(load_inventory(args.from_inventory), target) if args.from_inventory else ()
         report = scan_profiles(target, profiles=profiles, active=args.active,
                                max_pages=args.max_pages, max_requests=args.max_requests,
                                timeout=args.timeout, verify_tls=not args.insecure,
-                               sessions=sessions, proxy=args.proxy)
+                               sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls)
         if args.burp_procedure:
             if args.include_session_secrets:
                 print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
             print(render_burp_procedure(report, args.include_session_secrets))
             return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
-    except (ValueError, SessionCaptureError) as exc:
+    except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(render_json(report) if args.format == "json" else render_text(report, args.color))

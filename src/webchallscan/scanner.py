@@ -149,7 +149,8 @@ class Scanner:
     def __init__(self, target: str, *, active: bool = False, max_pages: int = 20,
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
                  profile: str = "desktop", session: BrowserSession | None = None,
-                 proxy: str | None = None) -> None:
+                 proxy: str | None = None,
+                 inventory_urls: tuple[str, ...] = ()) -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
@@ -164,6 +165,11 @@ class Scanner:
         self.profile = profile
         self.session = session
         self.proxy = self._validate_proxy(proxy)
+        if len(inventory_urls) > 100 or any(
+                not self._in_scope(url) or urlsplit(url).username or urlsplit(url).password
+                for url in inventory_urls):
+            raise ValueError("inventory seeds must be bounded same-origin HTTP URLs")
+        self.inventory_urls = tuple(sorted(set(self._clean_url(url) for url in inventory_urls)))
         self.requests_sent = 0
         self.observations: dict[str, PageObservation] = {}
         context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # NOSONAR: unverified TLS only on opt-in --insecure for CTF targets; default verifies
@@ -549,7 +555,7 @@ class Scanner:
     def scan(self) -> ScanReport:
         report = ScanReport(self.target, self.active, profiles=(self.profile,),
                             session_source=self.session.source if self.session else "none")
-        queue = deque([self.target])
+        queue = deque(dict.fromkeys((self.target, *self.inventory_urls)))
         seen: set[str] = set()
         successful_pages = 0
         candidates: list[Finding] = []
@@ -626,7 +632,12 @@ class Scanner:
                         report.findings.append(confirmed)
                 except (URLError, OSError, RuntimeError, ValueError):
                     report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
-        if discovered_routes == 0:
+        if self.inventory_urls:
+            report.coverage.append(
+                f"Seeded {len(self.inventory_urls)} GET endpoint(s) from a redacted inventory; "
+                "all requests remain subject to normal scan budgets."
+            )
+        if discovered_routes == 0 and not self.inventory_urls:
             report.coverage.append(
                 "No navigable links, GET form actions or literal script GET routes were discovered. "
                 "This HTTP-only scanner cannot execute JavaScript or observe live XHR/fetch traffic."
@@ -648,7 +659,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
                   active: bool = False, max_pages: int = 20, timeout: float = 5.0,
                   max_requests: int = 80, verify_tls: bool = True,
                   sessions: dict[str, BrowserSession] | None = None,
-                  proxy: str | None = None) -> ScanReport:
+                  proxy: str | None = None,
+                  inventory_urls: tuple[str, ...] = ()) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -657,7 +669,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
     for profile in profiles:
         scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
                           max_requests=max_requests, verify_tls=verify_tls, profile=profile,
-                          session=(sessions or {}).get(profile), proxy=proxy)
+                          session=(sessions or {}).get(profile), proxy=proxy,
+                          inventory_urls=inventory_urls)
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
