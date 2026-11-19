@@ -76,7 +76,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification")
     p.add_argument("--proxy", metavar="HTTP_URL", help="route scan requests through a local Burp HTTP proxy")
     p.add_argument("--format", choices=("text", "json"), default="text")
-    p.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    p.add_argument("--color", choices=("auto", "always", "never"), default="auto", help="terminal colors: auto, always or never")
+    p.add_argument("--verbose", action="store_true", help="show full finding vectors, replay and recovery details in text reports")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--extension-path", action="store_true", help="print the bundled Chromium extension directory and exit")
     return p
@@ -369,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_json(report) if args.format == "json" else render_text(report, args.color))
+    print(render_json(report) if args.format == "json" else render_text(report, args.color, verbose=args.verbose))
     if report.pages_scanned == 0:
         return 3
     return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
