@@ -21,6 +21,7 @@ from urllib.request import (
 
 from .http_client import (SameOriginRedirectHandler, read_bounded,
                           scanner_handlers, validate_loopback_proxy)
+from .jwt_audit import audit_jwt
 from .model import Finding, ScanReport, redact_url
 from .posture import inspect_response
 from .session import BrowserSession
@@ -276,6 +277,42 @@ class Scanner:
             parameters=tuple(sorted(parameters)),
         )
 
+    def _jwt_metadata_hints(self, response: Response) -> list[Finding]:
+        """Inspect JWT-shaped tokens in already-read text/cookies without disclosure."""
+        candidates = []
+        for token in re.findall(
+            r"(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{4,1200}\\.eyJ[A-Za-z0-9_-]{4,1200}\\.[A-Za-z0-9_-]{0,1500})(?![A-Za-z0-9_-])",
+            response.text[:MAX_BODY],
+        )[:5]:
+            candidates.append(("response", token))
+        for cookie in list(self.cookies)[:50]:
+            if cookie.value and cookie.value.startswith("eyJ") and cookie.value.count(".") == 2:
+                candidates.append(("cookie", cookie.value))
+                if len(candidates) >= 10:
+                    break
+        sources = set()
+        signals = set()
+        for source, token in candidates[:10]:
+            try:
+                audit = audit_jwt(token)
+            except ValueError:
+                continue
+            sources.add(source)
+            signals.update(item["rule"] for item in audit["signals"])
+        if not sources:
+            return []
+        return [self._finding(
+            rule="WEB-JWT-METADATA-001",
+            title="JWT-shaped authentication metadata observed",
+            severity="info", confidence="low", url=response.url,
+            evidence=("JWT-like token found in " + ", ".join(sorted(sources)) +
+                      "; review categories: " + (", ".join(sorted(signals)) or "none") +
+                      "; token, cookie names and claim values omitted."),
+            vector=f"Review the existing GET {redact_url(response.url)} response and local session securely.",
+            patch="Verify JWT signatures, issuer, audience and server-side authorization with a strict algorithm allowlist.",
+            session_cookies=(),
+        )]
+
     def _posture_findings(self, response: Response, method: str = "GET") -> list[Finding]:
         """Analyze existing response metadata without additional HTTP requests.
 
@@ -312,7 +349,7 @@ class Scanner:
         ) for item in observations]
 
     def _passive_findings(self, response: Response, parser: PageParser) -> list[Finding]:
-        out: list[Finding] = []
+        out: list[Finding] = self._jwt_metadata_hints(response)
         low = response.text.lower()
         if any(token in low for token in DEBUG_ERRORS):
             out.append(self._finding(rule="WEB-DEBUG-001", title="Debug or stack-trace disclosure",
