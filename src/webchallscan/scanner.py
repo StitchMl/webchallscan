@@ -537,7 +537,7 @@ class Scanner:
         # Source maps are annotations, not proof that the map is accessible.
         # Keep the map URL out of reports because it could carry query secrets.
         hints = re.findall(
-            r"(?://[#@]\\s*sourceMappingURL\\s*=\\s*([^\\s*]+)|/\\*#\\s*sourceMappingURL\\s*=\\s*([^*\\s]+))",
+            r"(?://[#@]\s*sourceMappingURL\s*=\s*([^\s*]+)|/\*#\s*sourceMappingURL\s*=\s*([^*\s]+))",
             response.text,
             re.I,
         )
