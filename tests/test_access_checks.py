@@ -39,3 +39,27 @@ def test_rejects_more_than_twelve_cases():
             "origin": "https://lab.example",
             "cases": [{"path": "/safe", "owner_headers": {}, "other_headers": {}}] * 13,
         })
+
+def test_readonly_client_tls_opt_in(monkeypatch):
+    import ssl
+
+    seen = []
+    class Headers:
+        def get(self, *args): return "application/json"
+    class FakeResponse:
+        status = 200
+        headers = Headers()
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, size): return b"ok"
+    class FakeOpener:
+        def open(self, *args, **kwargs): return FakeResponse()
+    def fake_build(*handlers):
+        seen.append(handlers)
+        return FakeOpener()
+    monkeypatch.setattr(access_checks, "build_opener", fake_build)
+    access_checks._digest_response("https://lab.example/", {}, 5)
+    access_checks._digest_response("https://lab.example/", {}, 5, verify_tls=False)
+    assert not any(isinstance(h, access_checks.HTTPSHandler) for h in seen[0])
+    contexts = [h._context for h in seen[1] if isinstance(h, access_checks.HTTPSHandler)]
+    assert len(contexts) == 1 and contexts[0].verify_mode == ssl.CERT_NONE

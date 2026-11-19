@@ -67,3 +67,25 @@ def test_cross_origin_path_and_write_operations_not_supported():
     with pytest.raises(ValueError):
         validate_contract(source([{"kind": "business", "path": "//evil.test/",
                                    "role": "owner", "expected_statuses": [200]}]))
+
+def test_api_client_respects_explicit_tls_override(monkeypatch):
+    import ssl
+    from webchallscan import api_contract
+
+    seen = []
+    class FakeResponse:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self, size): return b"ok"
+    class FakeOpener:
+        def open(self, *args, **kwargs): return FakeResponse()
+    def fake_build(*handlers):
+        seen.append(handlers)
+        return FakeOpener()
+    monkeypatch.setattr(api_contract, "build_opener", fake_build)
+    api_contract._fetch("https://lab.example/", {}, 5)
+    api_contract._fetch("https://lab.example/", {}, 5, verify_tls=False)
+    assert not any(isinstance(h, api_contract.HTTPSHandler) for h in seen[0])
+    contexts = [h._context for h in seen[1] if isinstance(h, api_contract.HTTPSHandler)]
+    assert len(contexts) == 1 and contexts[0].verify_mode == ssl.CERT_NONE

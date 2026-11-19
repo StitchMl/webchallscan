@@ -10,10 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -23,10 +24,13 @@ class NoRedirect(HTTPRedirectHandler):
 ALLOWED_HEADERS = {"authorization", "cookie", "x-api-key"}
 PROBES = ("", "WCS_TEST_0123", "0", "-1", "a" * 64)
 
-def _fetch(url, headers, timeout):
+def _fetch(url, headers, timeout, *, verify_tls=True):
     request = Request(url, method="GET", headers={**headers, "Accept": "application/json"})
+    handlers = [NoRedirect]
+    if not verify_tls:
+        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
     try:
-        with build_opener(NoRedirect).open(request, timeout=timeout) as response:
+        with build_opener(*handlers).open(request, timeout=timeout) as response:
             raw, status = response.read(65537), response.status
     except HTTPError as exc:
         raw, status = exc.read(65537), exc.code
@@ -52,7 +56,7 @@ def _validate_path(value):
 def _public(response):
     return {k: response[k] for k in ("status", "length", "digest")}
 
-def validate_contract(data, *, timeout=5.0, fetch=None):
+def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True):
     """Run explicit low-impact GET contracts. Maximum 30 HTTP requests."""
     if not isinstance(data, dict) or data.get("schema") != "webchallscan/api-contract-v1":
         raise ValueError("invalid API contract schema")
@@ -76,7 +80,8 @@ def validate_contract(data, *, timeout=5.0, fetch=None):
                     if isinstance(case, dict) else 31 for case in cases)
     if estimated > 30:
         raise ValueError("request budget would exceed 30; split the contract")
-    client = fetch or _fetch
+    client = fetch or (lambda url, headers, timeout: _fetch(
+        url, headers, timeout, verify_tls=verify_tls))
     requests = 0
     findings, results = [], []
     for index, case in enumerate(cases):
