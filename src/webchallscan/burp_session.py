@@ -69,8 +69,23 @@ def _safe_cookies(value: str, domain: str, path: str, secure: bool) -> list[dict
 
 
 def export_burp_session(xml_path: str, output_path: str,
-                        expected_origin: str) -> dict:
-    """Read one matching GET from Burp and save a private scanner session."""
+                        expected_origin: str, *, request_path: str | None = None,
+                        request_index: int = 1) -> dict:
+    """Select a matching GET from Burp and save a private scanner session.
+
+    request_index is 1-based among valid, same-origin GET+Cookie candidates,
+    after the optional exact path filter. Only private output stores cookies.
+    """
+    if type(request_index) is not int or not 1 <= request_index <= MAX_ITEMS:
+        raise ValueError("Burp session request index must be 1-500")
+    if request_path is not None and (
+            not isinstance(request_path, str) or not request_path.startswith("/")
+            or request_path.startswith("//") or "?" in request_path
+            or "#" in request_path or "%" in request_path
+            or "\\" in request_path or ".." in request_path
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in request_path)
+            or len(request_path) > 2048):
+        raise ValueError("Burp session request path must be an exact, safe path")
     parsed_origin = urlsplit(expected_origin)
     if (parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname
             or parsed_origin.username or parsed_origin.password
@@ -92,6 +107,7 @@ def export_burp_session(xml_path: str, output_path: str,
     if root.tag != "items" or not 1 <= len(items) <= MAX_ITEMS:
         raise ValueError("expected Burp XML with 1-500 items")
     session = None
+    candidates = 0
     for item in items:
         url = item.findtext("url")
         if not url or item.findtext("method", "").upper() != "GET":
@@ -100,12 +116,17 @@ def export_burp_session(xml_path: str, output_path: str,
         if ((parsed.scheme.lower(), parsed.netloc.lower()) != expected
                 or parsed.username or parsed.password):
             continue
+        path = parsed.path or "/"
+        if request_path is not None and path != request_path:
+            continue
         cookie_header = _cookie_header(item)
         if not cookie_header:
             continue
-        path = parsed.path or "/"
         if (not path.startswith("/") or path.startswith("//")
                 or "%" in path or "\\" in path or ".." in path):
+            continue
+        candidates += 1
+        if candidates != request_index:
             continue
         session = {
             "url": urlunsplit((parsed.scheme, parsed.netloc, path, "", "")),
@@ -136,6 +157,7 @@ def export_burp_session(xml_path: str, output_path: str,
     return {
         "schema": "webchallscan/burp-session-export-v1",
         "cookies_exported": len(parsed_session.cookies),
+        "selected_request_index": request_index,
         "origin": expected_origin,
         "session_file_created": True,
         "notes": [
