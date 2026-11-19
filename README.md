@@ -59,6 +59,22 @@ the presentation. The JSON schema, underlying findings, privacy redaction,
 exit codes and request behavior are unchanged. `NO_COLOR` and non-interactive
 output are respected by `--color auto`.
 
+### Portable Markdown scan reports
+
+Create a readable, shareable scan summary in Markdown without terminal colors
+or changing the JSON report schema:
+
+```bash
+webchallscan https://challenge.example/ --authorized --active --format markdown > scan.md
+webchallscan https://challenge.example/ --authorized --active --format markdown --verbose > full-scan.md
+```
+
+The Markdown view contains the severity table, redacted targets, evidence,
+patch guidance, coverage, and errors. It defaults to the top 20 findings,
+with `--top` / `--min-severity` display filters and `--verbose` for
+full evidence/replay context. This mode is for scanner reports only; structured
+API and offline results retain their own JSON/`--human` interface.
+
 ### Human-readable inventories and API audit results
 
 Non-scanner modes continue to output machine-readable JSON by default for
