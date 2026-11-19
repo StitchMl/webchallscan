@@ -1,5 +1,23 @@
 # webchallscan
 
+### SonarQube Cloud Automatic Analysis
+
+The project uses SonarQube Cloud **Automatic Analysis** on pushes and pull
+requests. The root `.sonarcloud.properties` file is the authoritative
+configuration for that mode: `src/webchallscan` is source code and `tests`
+is test code, with no overlap. The older `sonar-project.properties` exists
+for a future CI-based SonarScanner and does **not** configure Automatic
+Analysis. The Python test workflow is a separate check.
+
+Do not add a SonarScanner GitHub Action while Automatic Analysis is enabled:
+SonarQube Cloud does not support running both modes concurrently. A passing
+PR Quality Gate does not prove that the separate `main` analysis succeeded.
+If a push check is cancelled with `SonarQube Cloud analysis failed`, look
+up the **specific failure** under the SonarQube Cloud project’s
+Administration → Background Tasks → Error Details. A scanner/server-side
+error is distinct from an unsuccessful Quality Gate.
+
+
 Deterministic, offline/no-AI black-box analysis for **authorized CTF Jeopardy web challenges** when backend source is unavailable. It accepts a URL, stays on the exact origin, crawls with fixed budgets, extracts forms and parameters, records evidence, and prints tailored validation vectors and defensive patches.
 
 It does not promise complete coverage. Passive parameter-name matches are labeled `validation-only`. `payload-ready` appears only after an active marker produces target-derived evidence. The scanner does not brute-force credentials, enumerate the Internet, submit destructive requests, or automatically retrieve protected data or flags.
