@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file or args.audit_session_file or args.check_json_cases or args.burp_session_from):
+                       args.import_burp or args.audit_jwt_file or args.audit_session_file or args.burp_session_from):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
     if args.audit_session_file is not None:
@@ -224,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print(json.dumps(run_json_cases(
                 load_json_cases(args.check_json_cases), timeout=args.timeout,
-                verify_tls=not args.insecure), indent=2))
+                verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError):
             print("error: JSON validation failed; check contract and connectivity", file=sys.stderr)
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure), indent=2))
+            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError):
             print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
@@ -268,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --check-api-cases requires --authorized and excludes browser/scan modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure), indent=2))
+            print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError) as exc:
             print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)

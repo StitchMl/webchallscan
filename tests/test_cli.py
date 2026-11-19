@@ -43,10 +43,28 @@ def test_proxy_is_forwarded_to_scanner_without_changing_defaults(monkeypatch, ca
     assert captured["proxy"] == "http://127.0.0.1:8080"
 
 
-def test_proxy_is_rejected_for_contract_mode(capsys):
-    assert main(["--authorized", "--validate-api-contract", "not-used.json",
-                 "--proxy", "http://127.0.0.1:8080"]) == 2
-    assert "scanner mode" in capsys.readouterr().err
+def test_proxy_is_forwarded_to_contract_mode(monkeypatch, capsys):
+    captured = {}
+    monkeypatch.setattr("webchallscan.cli.load_contract", lambda name: {"name": name})
+    def fake_validate(data, **kwargs):
+        captured.update(kwargs)
+        return {"schema": "test"}
+    monkeypatch.setattr("webchallscan.cli.validate_contract", fake_validate)
+    assert main(["--authorized", "--validate-api-contract", "cases.json",
+                 "--proxy", "http://127.0.0.1:8080"]) == 0
+    assert captured["proxy"] == "http://127.0.0.1:8080"
+
+
+def test_proxy_forwarded_to_json_case_mode(monkeypatch, capsys):
+    captured = {}
+    monkeypatch.setattr("webchallscan.cli.load_json_cases", lambda name: {"name": name})
+    def fake_json(data, **kwargs):
+        captured.update(kwargs)
+        return {"schema": "test"}
+    monkeypatch.setattr("webchallscan.cli.run_json_cases", fake_json)
+    assert main(["--authorized", "--active", "--check-json-cases", "cases.json",
+                 "--proxy", "http://localhost:8080"]) == 0
+    assert captured["proxy"] == "http://localhost:8080"
 
 
 def test_from_inventory_cli_only_seeds_explicit_same_origin(monkeypatch, tmp_path, capsys):

@@ -69,9 +69,12 @@ def scanner_handlers(origin: tuple[str, str], cookies: CookieJar,
     return handlers
 
 
-def api_handlers(*, verify_tls: bool = True) -> list:
-    """Retain stdlib HTTPS defaults unless explicit insecure TLS was requested."""
+def api_handlers(*, verify_tls: bool = True, proxy: str | None = None) -> list:
+    """Keep redirects blocked; optionally route requests via a local proxy."""
+    proxy = validate_loopback_proxy(proxy)
     handlers = [NoRedirect]
+    if proxy:
+        handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
     if not verify_tls:
         handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit opt-in
     return handlers
