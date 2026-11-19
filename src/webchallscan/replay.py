@@ -88,7 +88,7 @@ def _raw_http_template(finding: Finding, include_secrets: bool) -> str:
         body = urlencode(fields)
         headers.append("Content-Type: application/x-www-form-urlencoded")
         headers.append(f"Content-Length: {len(body.encode('utf-8'))}")
-    return "\n".join(headers) + "\n\n" + body
+    return "\r\n".join(headers) + "\r\n\r\n" + body
 
 
 def _finding_steps(finding: Finding, include_secrets: bool) -> list[str]:
