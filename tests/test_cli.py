@@ -47,3 +47,28 @@ def test_proxy_is_rejected_for_contract_mode(capsys):
     assert main(["--authorized", "--validate-api-contract", "not-used.json",
                  "--proxy", "http://127.0.0.1:8080"]) == 2
     assert "scanner mode" in capsys.readouterr().err
+
+
+def test_from_inventory_cli_only_seeds_explicit_same_origin(monkeypatch, tmp_path, capsys):
+    import json
+    captured = {}
+    def fake_scan(*args, **kwargs):
+        captured.update(kwargs)
+        return ScanReport("https://ctf.example/", False, pages_scanned=1)
+    monkeypatch.setattr("webchallscan.cli.scan_profiles", fake_scan)
+    inventory = {
+        "schema": "webchallscan/network-inventory-v1",
+        "origin": "https://ctf.example",
+        "endpoints": [
+            {"method": "GET", "path": "/api/items", "parameters": ["q"]},
+            {"method": "POST", "path": "/api/write", "parameters": ["id"]},
+        ],
+    }
+    file = tmp_path / "inventory.json"
+    file.write_text(json.dumps(inventory))
+    assert main(["https://ctf.example/", "--authorized",
+                 "--from-inventory", str(file)]) == 0
+    assert captured["inventory_urls"] == ("https://ctf.example/api/items?q=WCSBASE",)
+    assert main(["https://wrong.example/", "--authorized",
+                 "--from-inventory", str(file)]) == 2
+    assert "differs" in capsys.readouterr().err
