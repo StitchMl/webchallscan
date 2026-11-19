@@ -260,6 +260,10 @@ POST requests are replayed automatically.
 ### Offline Burp Suite XML history import
 
 Export selected items from Burp Suite's HTTP history or Site Map as XML.
+Only regular `.xml` files in the current working directory or its subdirectories
+are accepted. Change into the export directory before importing an external
+file. Symlink escapes and files exceeding 5 MB are rejected.
+
 Import the local file without generating **any** requests or replaying POSTs:
 
 ```powershell
