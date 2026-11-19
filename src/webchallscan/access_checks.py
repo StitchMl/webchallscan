@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -18,10 +19,13 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _digest_response(url: str, headers: dict[str, str], timeout: float) -> dict:
+def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verify_tls: bool = True) -> dict:
     req = Request(url, method="GET", headers={**headers, "Accept": "application/json, text/plain, */*"})  # NOSONAR: authorized black-box request to the user-specified target
+    handlers = [_NoRedirect]
+    if not verify_tls:
+        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
     try:
-        with build_opener(_NoRedirect).open(req, timeout=timeout) as res:
+        with build_opener(*handlers).open(req, timeout=timeout) as res:
             raw = res.read(65537)
             status = res.status
             typ = res.headers.get("Content-Type", "").split(";")[0].strip().lower()
@@ -35,7 +39,7 @@ def _digest_response(url: str, headers: dict[str, str], timeout: float) -> dict:
             "length": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def run_readonly_cases(data: dict, timeout: float = 5.0) -> dict:
+def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = True) -> dict:
     if data.get("schema") != "webchallscan/read-only-cases-v1":
         raise ValueError("invalid case schema")
     origin = data.get("origin")
@@ -64,8 +68,12 @@ def run_readonly_cases(data: dict, timeout: float = 5.0) -> dict:
                 raise ValueError("role headers must be authorization, cookie or x-api-key only")
             header_sets.append(h)
         url = origin + path
-        owner = _digest_response(url, header_sets[0], timeout)
-        other = _digest_response(url, header_sets[1], timeout)
+        if verify_tls:
+            owner = _digest_response(url, header_sets[0], timeout)
+            other = _digest_response(url, header_sets[1], timeout)
+        else:
+            owner = _digest_response(url, header_sets[0], timeout, verify_tls=False)
+            other = _digest_response(url, header_sets[1], timeout, verify_tls=False)
         # A matching 2xx digest is a review candidate, not an IDOR proof:
         # generic success responses and public resources can match.
         suspected = 200 <= owner["status"] < 300 and 200 <= other["status"] < 300 and (
