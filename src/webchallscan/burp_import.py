@@ -112,7 +112,7 @@ def _csrf_request_sources(item: ET.Element, method: str) -> tuple[str, ...]:
     elif "application/json" in content_type and len(body) <= 100_000:
         # Parse JSON *keys* only, never retain values or reflect arbitrary keys.
         # Regex is conservative: no claims about nested/dynamic CSRF protection.
-        if any(re.search(rb'"' + b'"' + name.encode("ascii") +
+        if any(re.search(rb'"' + name.encode("ascii") +
                          rb'"\s*:', body, re.I)
                for name in _CSRF_NAMES):
             found.add("json-field")
