@@ -438,3 +438,35 @@ def test_js_comment_hints_are_bounded_and_do_not_include_literals(server):
     assert "VERYPRIVATE" not in repr(result[0].to_dict())
     assert scanner.requests_sent == 0
     assert scanner._js_comment_hints(Response(server + "/bundle.js", 404, {}, comments)) == []
+
+def test_metadata_headers_summarized_without_banner_values(server):
+    from webchallscan.scanner import Response
+    scanner = Scanner(server)
+    metadata = Response(server + "/", 200,
+        {"allow": "GET, POST, OPTIONS, X-SECRET",
+         "server": "TOPSECRET server build",
+         "x-powered-by": "SECRET version"}, "")
+    findings = scanner._metadata_findings(metadata, "OPTIONS")
+    assert {f.rule for f in findings} == {"WEB-HTTP-ALLOW-001", "WEB-TECH-BANNER-001"}
+    public = repr([f.to_dict() for f in findings])
+    assert "GET, OPTIONS, POST" in public
+    assert "TOPSECRET" not in public
+    assert "SECRET version" not in public
+    assert all(f.exploit_status == "validation-only" for f in findings)
+
+
+def test_javascript_discovery_explicit_get_only():
+    source = """
+    fetch('/api/get', {method: 'GET'});
+    fetch('/api/create', {method: 'POST'});
+    $.get('/v1/search?q=x');
+    $.getJSON('/api/json');
+    $.ajax({url: '/api/list', type: 'GET'});
+    $.ajax({url: '/api/remove', type: 'DELETE'});
+    axios({method:'get',url:'/api/info'});
+    axios.post('/api/post');
+    """
+    assert Scanner._static_get_routes(source) == [
+        "/api/get", "/api/info", "/api/json", "/api/list",
+        "/v1/search?q=x",
+    ]
