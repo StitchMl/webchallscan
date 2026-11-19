@@ -171,6 +171,21 @@ webchallscan --authorized --burp-session-from history.xml \
 webchallscan --authorized --session-file session.json --active
 ```
 
+When the export contains multiple eligible GET requests, you can select an
+exact request path and the **1-based index** among matches:
+
+```bash
+webchallscan --authorized --burp-session-from history.xml \
+  --burp-session-out selected.json --expect-origin https://challenge.example \
+  --allow-secret-export --burp-session-path /api/account --burp-session-index 2
+```
+
+The default remains the first eligible GET when these flags are omitted.
+An unmatched or unsafe path/index fails without creating an output file.
+The index applies after filtering by same origin, GET, Cookie and optional
+exact path. Inspect the requests manually in Burp before exporting; the
+selected cookie values remain private and are never printed.
+
 This exports **live cookie values** to a newly created, exclusive file
 (mode 0600 on POSIX). It refuses existing output files, external origins,
 non-GET request sources, invalid cookie names and malformed XML.

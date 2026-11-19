@@ -58,6 +58,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--import-burp", metavar="XML", help="offline redacted inventory from a Burp Suite XML HTTP history export")
     p.add_argument("--burp-session-from", metavar="XML", help="select a Burp XML GET request with Cookie for private session export")
     p.add_argument("--burp-session-out", metavar="JSON", help="exclusive new private session-file path")
+    p.add_argument("--burp-session-path", metavar="PATH", help="select a Burp GET with this exact, same-origin URL path")
+    p.add_argument("--burp-session-index", type=int, metavar="N", help="select the Nth matching Burp GET request (1-500, default 1)")
     p.add_argument("--allow-secret-export", action="store_true", help="acknowledge the new session file contains live cookie values")
     p.add_argument("--audit-jwt-file", metavar="FILE", help="offline JWT structure and metadata audit without printing token values")
     p.add_argument("--audit-session-file", metavar="JSON", help="offline aggregate cookie encoding and JWT audit for existing session JSON")
@@ -204,15 +206,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         try:
             result = export_burp_session(
-                args.burp_session_from, args.burp_session_out, args.expect_origin)
+                args.burp_session_from, args.burp_session_out, args.expect_origin,
+                request_path=args.burp_session_path,
+                request_index=1 if args.burp_session_index is None else args.burp_session_index)
             print("warning: new session file contains live cookies; restrict access and delete it after use", file=sys.stderr)
             print(_format_result(result, indent=2))
             return 0
         except (ValueError, OSError, UnicodeError):
             print("error: Burp session export failed; check origin, source and output path", file=sys.stderr)
             return 2
-    if args.burp_session_out or args.allow_secret_export:
-        print("error: --burp-session-out and --allow-secret-export require --burp-session-from", file=sys.stderr)
+    if (args.burp_session_out or args.allow_secret_export
+            or args.burp_session_path is not None or args.burp_session_index is not None):
+        print("error: Burp session selection/output flags require --burp-session-from", file=sys.stderr)
         return 2
     if args.audit_jwt_file is not None:
         if (args.url or args.active or args.cdp or args.browser_session
