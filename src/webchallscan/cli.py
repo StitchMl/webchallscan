@@ -16,6 +16,7 @@ from .burp_session import export_burp_session
 from .cookie_audit import audit_session_file
 from .jwt_audit import audit_jwt_file
 from .json_checks import load_json_cases, run_json_cases
+from .markdown_report import render_markdown
 from .network import observe_cdp
 from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
@@ -76,7 +77,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=5.0)
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification")
     p.add_argument("--proxy", metavar="HTTP_URL", help="route scan requests through a local Burp HTTP proxy")
-    p.add_argument("--format", choices=("text", "json"), default="text")
+    p.add_argument("--format", choices=("text", "json", "markdown"), default="text")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto", help="terminal colors: auto, always or never")
     p.add_argument("--verbose", action="store_true", help="show full finding vectors, replay and recovery details in text reports")
     p.add_argument("--human", action="store_true", help="human-readable colored view of inventories and API/offline JSON reports (opt-in)")
@@ -124,8 +125,16 @@ def _normalize_command(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
-    if args.human and args.format == "json":
-        print("error: --human and --format json are mutually exclusive", file=sys.stderr)
+    if args.human and args.format != "text":
+        print("error: --human requires --format text", file=sys.stderr)
+        return 2
+    if args.format == "markdown" and (
+            args.quick or args.observe_network is not None or args.plan_inventory
+            or args.import_burp or args.burp_session_from or args.audit_jwt_file
+            or args.audit_session_file or args.validate_api_contract
+            or args.check_api_cases or args.check_json_cases
+            or args.burp_procedure or args.export_curl or args.export_python):
+        print("error: --format markdown applies only to scanner reports", file=sys.stderr)
         return 2
     if args.top is not None and not 1 <= args.top <= 1000:
         print("error: --top must be 1-1000", file=sys.stderr)
@@ -397,8 +406,14 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(render_json(report) if args.format == "json" else render_text(report, args.color, verbose=args.verbose,
+    if args.format == "json":
+        print(render_json(report))
+    elif args.format == "markdown":
+        print(render_markdown(report, verbose=args.verbose,
                               top=args.top, min_severity=args.min_severity))
+    else:
+        print(render_text(report, args.color, verbose=args.verbose,
+                          top=args.top, min_severity=args.min_severity))
     if report.pages_scanned == 0:
         return 3
     return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
