@@ -251,6 +251,9 @@ The default `--profile both` runs isolated desktop and mobile scans with separat
 
 Useful controls:
 
+To inspect scan traffic in Burp Suite Community, run `webchallscan https://challenge.example/ --authorized --proxy http://127.0.0.1:8080`. The optional `--proxy` accepts **only** an unauthenticated loopback HTTP proxy and applies to scanner requests, not offline inventory or API contract modes. Configure Burp to listen at that address. For HTTPS interception, trust Burp's CA in a dedicated test environment or explicitly opt into `--insecure` for disposable authorized challenges. Environment `NO_PROXY` can cause urllib to bypass the proxy for local targets; adjust it for your lab.
+
+
 - `--max-pages 20`: deterministic crawl bound.
 - `--max-requests 80`: hard request budget, including probes.
 - `--timeout 5`: per-request timeout.
