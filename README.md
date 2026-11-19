@@ -206,6 +206,24 @@ omitted from the report. **NoSQL differentials are review candidates, not
 confirmed NoSQL injection.** TLS remains verified unless `--insecure`
 is explicitly selected.
 
+### Optional NoSQL GET bracket-operator differentials
+
+The default scanner does **not** send NoSQL operator probes.
+To enable up to three explicitly observed GET query parameter candidates,
+add `--nosql-query` alongside `--active`:
+
+```bash
+webchallscan https://challenge.example/search?q=safe \
+  --authorized --active --nosql-query --max-requests 80
+```
+
+Each candidate is compared with four bounded requests: two scalar
+`q=WCS_NONMATCH_7340` requests and two bracket-operator
+`q[$ne]=WCS_NONMATCH_7340` requests. Unstable and simply echoed
+responses are not reported. Differences are informational manual-review
+candidates, **not proof** of a backend NoSQL engine or injection.
+Sensitive parameter names are excluded and current request limits apply.
+
 ### Bounded multi-syntax SSTI arithmetic checks
 
 With `--active`, SSTI validation tries the existing Jinja/Twig

@@ -59,6 +59,8 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == "/template-alt":
             value = values.get("message", [""])[0]
             self._send(SSTI_RESULT if value == "${7340*3}" else value)
+        elif p.path == "/nosql":
+            self._send("candidate" if "q[$ne]" in values else "baseline")
         elif p.path == "/escaped":
             self._send(escape(values.get("x7", [""])[0]))
         elif p.path == "/session":
@@ -508,3 +510,28 @@ def test_alternate_ssti_is_off_by_default_and_requires_cli_opt_in(server, capsys
     from webchallscan.cli import main
     assert main([server, "--authorized", "--ssti-alternates"]) == 2
     assert "requires --active" in capsys.readouterr().err
+
+def test_opt_in_nosql_query_differential_is_review_only(server):
+    url = server + "/nosql?q=WCSBASE"
+    passive = Scanner(url, max_pages=1, max_requests=40).scan()
+    assert not any(f.rule == "WEB-NOSQL-REVIEW-001" for f in passive.findings)
+    default_active = Scanner(url, active=True, max_pages=1, max_requests=40).scan()
+    assert not any(f.rule == "WEB-NOSQL-REVIEW-001" for f in default_active.findings)
+    report = Scanner(url, active=True, nosql_query=True, max_pages=1,
+                     max_requests=40).scan()
+    found = [f for f in report.findings if f.rule == "WEB-NOSQL-REVIEW-001"]
+    assert len(found) == 1
+    assert found[0].severity == "info"
+    assert found[0].confidence == "low"
+    assert found[0].exploit_status == "validation-only"
+    assert report.requests_sent <= 40
+
+
+def test_nosql_query_budget_and_cli_mode_restrictions(server, capsys):
+    from webchallscan.cli import main
+    assert main([server, "--authorized", "--nosql-query"]) == 2
+    assert "only to --active" in capsys.readouterr().err
+    report = Scanner(server + "/nosql?q=good", active=True,
+                     nosql_query=True, max_pages=1, max_requests=3).scan()
+    assert report.requests_sent == 3
+    assert not any(f.rule == "WEB-NOSQL-REVIEW-001" for f in report.findings)
