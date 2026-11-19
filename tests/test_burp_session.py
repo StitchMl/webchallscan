@@ -83,6 +83,7 @@ def test_burp_session_rejects_dtd(tmp_path, monkeypatch):
 
 
 def test_session_export_refuses_input_outside_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     external = tmp_path / "outside.xml"
