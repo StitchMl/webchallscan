@@ -128,6 +128,15 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Passive JavaScript source-map hints
+
+When the crawler already fetches same-origin JavaScript assets linked from HTML,
+it now inspects `sourceMappingURL` annotations in those responses. A valid
+same-origin reference yields an informational `WEB-SOURCEMAP-HINT-001` finding.
+The scanner **does not fetch the map**, read original source files, or claim
+that source code is exposed. Map URLs and query secrets are not printed.
+This check does not consume any extra request budget.
+
 ### Scan observed GET endpoints (opt-in)
 
 An inventory produced by `--observe-network` or `--import-burp` can seed

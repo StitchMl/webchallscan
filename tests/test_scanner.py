@@ -373,3 +373,40 @@ def test_inventory_seeds_reject_external_origin_and_remain_opt_in(server):
         Scanner(server, inventory_urls=("https://other.example/path",))
     report = Scanner(server + "/protected", max_pages=1, max_requests=3).scan()
     assert not any("Seeded" in note for note in report.coverage)
+
+
+def test_source_map_hint_is_passive_same_origin_and_redacted(server):
+    from webchallscan.scanner import Response
+
+    scanner = Scanner(server, max_pages=1, max_requests=3)
+    js = Response(server + "/bundle.js?token=PRIVATE", 200,
+                  {"content-type": "application/javascript"},
+                  "//# sourceMappingURL=/assets/bundle.js.map?key=SECRET")
+    findings = scanner._source_map_hints(js)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.rule == "WEB-SOURCEMAP-HINT-001"
+    assert finding.severity == "info"
+    assert finding.exploit_status == "validation-only"
+    assert scanner.requests_sent == 0
+    assert "SECRET" not in repr(finding.to_dict())
+    assert "PRIVATE" not in repr(finding.to_dict())
+    assert scanner._source_map_hints(Response(
+        server + "/bundle.js", 200, {}, "//# sourceMappingURL=data:application/json,abc"
+    )) == []
+    assert scanner._source_map_hints(Response(
+        server + "/bundle.js", 200, {}, "//# sourceMappingURL=https://outside.example/x.map"
+    )) == []
+    assert scanner._source_map_hints(Response(
+        server + "/bundle.js", 404, {}, "//# sourceMappingURL=app.js.map"
+    )) == []
+
+
+def test_source_map_block_comment_support(server):
+    from webchallscan.scanner import Response
+
+    scanner = Scanner(server)
+    assert scanner._source_map_hints(Response(
+        server + "/app.min.js", 200, {},
+        "/*# sourceMappingURL=app.min.js.map */"
+    ))
