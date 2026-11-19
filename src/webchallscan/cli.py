@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout), indent=2))
+            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError):
             print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --check-api-cases requires --authorized and excludes browser/scan modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout), indent=2))
+            print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError) as exc:
             print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)
