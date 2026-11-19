@@ -93,7 +93,7 @@ def test_session_file_refuses_symlink_to_other_user_file(tmp_path):
     original.write_text(json.dumps({"url": "https://lab.example", "cookies": []}))
     alias = tmp_path / "alias.json"
     alias.symlink_to(original)
-    with pytest.raises(SessionCaptureError, match="cannot read"):
+    with pytest.raises(SessionCaptureError, match="regular file"):
         load_session_file(str(alias))
     assert load_session_file(str(original)).url == "https://lab.example"
 
