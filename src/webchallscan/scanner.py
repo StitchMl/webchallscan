@@ -14,6 +14,7 @@ from urllib.request import (
     HTTPCookieProcessor,
     HTTPRedirectHandler,
     HTTPSHandler,
+    ProxyHandler,
     Request,
     build_opener,
 )
@@ -146,7 +147,8 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
 class Scanner:
     def __init__(self, target: str, *, active: bool = False, max_pages: int = 20,
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
-                 profile: str = "desktop", session: BrowserSession | None = None) -> None:
+                 profile: str = "desktop", session: BrowserSession | None = None,
+                 proxy: str | None = None) -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
@@ -160,6 +162,7 @@ class Scanner:
             raise ValueError("profile must be desktop or mobile")
         self.profile = profile
         self.session = session
+        self.proxy = self._validate_proxy(proxy)
         self.requests_sent = 0
         self.observations: dict[str, PageObservation] = {}
         context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # NOSONAR: unverified TLS only on opt-in --insecure for CTF targets; default verifies
@@ -167,10 +170,29 @@ class Scanner:
         if session:
             self._import_session_cookies(session)
         self.opener = build_opener(
+            *([ProxyHandler({"http": self.proxy, "https": self.proxy})] if self.proxy else []),
             SameOriginRedirectHandler(self.origin),
             HTTPCookieProcessor(self.cookies),
             HTTPSHandler(context=context),
         )
+
+    @staticmethod
+    def _validate_proxy(proxy: str | None) -> str | None:
+        if proxy is None:
+            return None
+        p = urlsplit(proxy)
+        # Only local interception is supported to prevent accidentally
+        # forwarding authenticated sessions to untrusted proxy servers.
+        if (p.scheme != "http" or p.hostname not in {"127.0.0.1", "localhost", "::1"}
+                or p.username or p.password or p.path not in {"", "/"} or p.query or p.fragment):
+            raise ValueError("--proxy must be an HTTP loopback URL without credentials or path")
+        try:
+            port = p.port
+        except ValueError as exc:
+            raise ValueError("--proxy requires a valid port") from exc
+        if port is None:
+            raise ValueError("--proxy requires an explicit port")
+        return proxy
 
     def _import_session_cookies(self, session: BrowserSession) -> None:
         host = urlsplit(self.target).hostname or ""
@@ -590,7 +612,8 @@ class Scanner:
 def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobile"),
                   active: bool = False, max_pages: int = 20, timeout: float = 5.0,
                   max_requests: int = 80, verify_tls: bool = True,
-                  sessions: dict[str, BrowserSession] | None = None) -> ScanReport:
+                  sessions: dict[str, BrowserSession] | None = None,
+                  proxy: str | None = None) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -599,7 +622,7 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
     for profile in profiles:
         scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
                           max_requests=max_requests, verify_tls=verify_tls, profile=profile,
-                          session=(sessions or {}).get(profile))
+                          session=(sessions or {}).get(profile), proxy=proxy)
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
