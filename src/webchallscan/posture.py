@@ -35,4 +35,26 @@ def inspect_response(method: str, path: str, resource_type: str,
             "access-control-allow-credentials", "").strip().lower() == "true":
         add("HEADER-CORS-CONFLICT", "Conflicting CORS credential policy", "low",
             "Wildcard ACAO appears together with Access-Control-Allow-Credentials: true")
+    # Inspect only Set-Cookie attributes. Never store cookie values or names.
+    # This is intentionally conservative: a cookie's purpose is unknown.
+    cookie = h.get("set-cookie", "")
+    if cookie and len(cookie) <= 8192:
+        first, *attributes = cookie.split(";")
+        if "=" in first and first.split("=", 1)[0].strip():
+            attr_names = {part.strip().split("=", 1)[0].lower()
+                          for part in attributes}
+            if secure_origin and "secure" not in attr_names:
+                add("COOKIE-SECURE", "Cookie lacks Secure attribute", "low",
+                    "A cookie on an HTTPS response omits Secure; the cookie name and value are hidden")
+            if "httponly" not in attr_names:
+                add("COOKIE-HTTPONLY", "Cookie lacks HttpOnly attribute", "info",
+                    "A cookie omits HttpOnly; applicability depends on the cookie's purpose")
+            if "samesite" not in attr_names:
+                add("COOKIE-SAMESITE", "Cookie lacks SameSite attribute", "info",
+                    "A cookie omits an explicit SameSite attribute; browser defaults may apply")
+            if "samesite" in attr_names and any(
+                    part.strip().lower().startswith("samesite=none") for part in attributes
+            ) and "secure" not in attr_names:
+                add("COOKIE-SAMESITE-NONE", "SameSite=None cookie lacks Secure", "low",
+                    "SameSite=None appears without Secure; modern browsers may reject the cookie")
     return out
