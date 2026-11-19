@@ -223,7 +223,7 @@ webchallscan --authorized --burp-session-from history.xml \
 webchallscan --authorized --session-file session.json --active
 ```
 
-When the export contains multiple eligible GET requests, you can select an
+As with the offline Burp inventory importer, the XML session source must be a regular `.xml` file inside the current working directory, limited to 5 MB. Change into the export directory before running the command; paths or symlinks escaping the work tree are rejected before any private session file is created.\n\nWhen the export contains multiple eligible GET requests, you can select an
 exact request path and the **1-based index** among matches:
 
 ```bash
