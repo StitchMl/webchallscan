@@ -394,6 +394,7 @@ webchallscan --authorized --check-api-cases .\\cases.json --timeout 5 > access-r
 ```
 
 The origin and resources are supplied by the operator: **no domain hardcoding**.
+The checker validates the complete case file before any request is sent; an invalid later case does not trigger earlier authenticated requests.
 The checker does not enumerate IDs, replay captured requests, mutate resources,
 or submit injection payloads. It reports response status, size, content type
 and hash, but never includes credentials or response bodies. Matching successful
@@ -405,6 +406,7 @@ Store case files securely and delete them after the exercise.
 
 Create a local `contract.json` using **owned lab test resources** and dedicated
 test credentials. This mode uses GET only and at most 30 requests per run.
+It validates all cases, roles and markers before sending the first request.
 It does not enumerate identifiers, run exploitation payloads, or replay POST
 operations; all origins are user-supplied and no lab is hardcoded.
 
