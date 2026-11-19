@@ -28,7 +28,7 @@ PROBE_NOSQL = {"$ne": "WCS_NONMATCH_7340"}
 
 
 def _send_json(url: str, body: dict, headers: dict[str, str], timeout: float,
-               *, verify_tls: bool = True) -> dict:
+               *, verify_tls: bool = True, proxy: str | None = None) -> dict:
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > MAX_BODY:
         raise ValueError("JSON request exceeds 16 KiB")
@@ -36,7 +36,7 @@ def _send_json(url: str, body: dict, headers: dict[str, str], timeout: float,
         **headers, "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
     })
-    handlers = api_handlers(verify_tls=verify_tls)
+    handlers = api_handlers(verify_tls=verify_tls, proxy=proxy)
     res = read_bounded(build_opener(*handlers), req, timeout, MAX_RESPONSE + 1)
     if len(res.body) > MAX_RESPONSE:
         raise ValueError("JSON response exceeds 64 KiB")
@@ -64,7 +64,9 @@ def _signature(result: dict, values: list[str]) -> tuple[int, str]:
 
 
 def run_json_cases(data: dict, *, timeout: float = 5.0,
-                   verify_tls: bool = True, send=None) -> dict:
+                   verify_tls: bool = True, proxy: str | None = None, send=None) -> dict:
+    from .http_client import validate_loopback_proxy
+    validate_loopback_proxy(proxy)
     if not isinstance(data, dict) or data.get("schema") != SCHEMA:
         raise ValueError("unsupported JSON case schema")
     origin = data.get("origin")
@@ -123,7 +125,7 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
     findings = []
     outcomes = []
     client = send or (lambda url, body, headers, timeout: _send_json(
-        url, body, headers, timeout, verify_tls=verify_tls))
+        url, body, headers, timeout, verify_tls=verify_tls, proxy=proxy))
     for number, (path, kind, body, field, headers) in enumerate(prepared, 1):
         probes = (
             ["WCSBASE", PROBE_SSTI, PROBE_SSTI]
