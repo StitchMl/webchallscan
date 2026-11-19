@@ -383,6 +383,11 @@ Store a JWT from an authorized test in a private local file and run:
 webchallscan --audit-jwt-file ./jwt.txt
 ```
 
+The file must be a regular `.jwt` or `.txt` file directly in the current
+working directory; change into its directory before running the audit.
+Paths containing directories and symlinks are rejected, and the input
+reader has a hard 16 KiB limit. Token values are never printed in errors.
+
 This mode sends **zero network requests**. It parses the compact JWT header
 and payload, reports algorithm and **claim names only**, and flags review
 candidates such as `alg: none`, key-selection headers, HMAC configuration,

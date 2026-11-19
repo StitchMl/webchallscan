@@ -43,7 +43,8 @@ def test_malformed_token_is_rejected(raw):
         audit_jwt(raw)
 
 
-def test_file_mode_is_exclusive_offline(tmp_path, capsys):
+def test_file_mode_is_exclusive_offline(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "jwt.txt"
     file.write_text(token({"alg": "none"}, {"sub": "SECRET_VALUE"}))
     assert audit_jwt_file(str(file))["algorithm"] == "none"
@@ -52,3 +53,40 @@ def test_file_mode_is_exclusive_offline(tmp_path, capsys):
     assert result["algorithm"] == "none"
     assert "SECRET_VALUE" not in json.dumps(result)
     assert main(["https://lab.example", "--audit-jwt-file", str(file)]) == 2
+
+
+@pytest.mark.parametrize("unsafe", [
+    "../private.jwt", "folder/secret.txt", "./token.jwt",
+    "/etc/passwd", "bad token.txt", "session.json",
+])
+def test_jwt_file_refuses_unsafe_cli_paths(tmp_path, monkeypatch, unsafe):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError):
+        audit_jwt_file(unsafe)
+
+
+def test_jwt_file_rejects_symlink_and_too_large_input(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    file = tmp_path / "token.jwt"
+    file.write_text("valid-looking.jwt.value")
+    alias = tmp_path / "alias.jwt"
+    alias.symlink_to(file)
+    with pytest.raises(ValueError, match="regular"):
+        audit_jwt_file("alias.jwt")
+    file.write_bytes(b" " * 16_385)
+    with pytest.raises(ValueError, match="too large"):
+        audit_jwt_file("token.jwt")
+
+
+def test_jwt_file_refuses_outside_workspace_and_invalid_encoding(tmp_path, monkeypatch):
+    outer = tmp_path / "jwt.txt"
+    outer.write_text(token({"alg": "HS256"}, {"sub": "PRIVATE"}))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    with pytest.raises(ValueError, match="working directory"):
+        audit_jwt_file(str(outer))
+    malformed = workspace / "malformed.jwt"
+    malformed.write_bytes(bytes([255, 254]))
+    with pytest.raises(ValueError, match="encoding"):
+        audit_jwt_file("malformed.jwt")
