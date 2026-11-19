@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
 from .network import _safe_request
+from .burp_json_hints import json_string_field_hints
 from .posture import inspect_response
 
 MAX_XML = 5_000_000
@@ -176,6 +177,13 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
             **entry, "type": "BurpHistory", "statuses": [], "count": 0,
         })
         record["count"] += 1
+        # Metadata only: never store the captured body or any value.
+        hints = json_string_field_hints(item, str(entry["method"]))
+        if hints:
+            known = record.setdefault("json_fields", [])
+            for field in hints:
+                if field not in known and len(known) < 12:
+                    known.append(field)
         raw_status = item.findtext("status", "")
         try:
             status = int(raw_status)
@@ -221,6 +229,8 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
     ))
     for endpoint in endpoints:
         endpoint["statuses"].sort()
+        if "json_fields" in endpoint:
+            endpoint["json_fields"].sort()
     return {
         "schema": "webchallscan/network-inventory-v1",
         "origin": origin[0] + "://" + origin[1],
@@ -233,6 +243,7 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
             "Offline Burp XML import: no HTTP requests or active tests were sent.",
             "Only one exact origin is included; other origins are ignored.",
             "Request bodies, raw responses, credentials and parameter values are discarded.",
+            "JSON POST field paths are passive hints only; no request is replayed.",
             "Header configuration signals are not confirmed exploitability.",
         ],
     }
