@@ -308,3 +308,16 @@ def test_select_without_name_does_not_affect_following_form_controls():
     """)
     assert parser.forms[0].inputs == [("q", "text", "ok")]
     assert parser.forms[1].inputs == [("role", "select", "guest")]
+
+def test_proxy_requires_explicit_loopback_http_endpoint(server):
+    for proxy in (
+        "https://127.0.0.1:8080", "http://example.com:8080",
+        "http://user:pass@127.0.0.1:8080", "http://127.0.0.1:8080/extra",
+        "http://127.0.0.1", "http://127.0.0.1:invalid",
+        "http://127.0.0.1:8080/?q=1",
+    ):
+        with pytest.raises(ValueError):
+            Scanner(server, proxy=proxy)
+    scanner = Scanner(server, proxy="http://127.0.0.1:8080")
+    assert scanner.proxy == "http://127.0.0.1:8080"
+    assert any(type(handler).__name__ == "ProxyHandler" for handler in scanner.opener.handlers)
