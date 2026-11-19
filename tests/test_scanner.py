@@ -308,3 +308,35 @@ def test_select_without_name_does_not_affect_following_form_controls():
     """)
     assert parser.forms[0].inputs == [("q", "text", "ok")]
     assert parser.forms[1].inputs == [("role", "select", "guest")]
+
+def test_posture_checks_use_existing_http_responses_without_extra_requests(server):
+    scanner = Scanner(server + "/form", max_pages=1, max_requests=3)
+    report = scanner.scan()
+    assert report.requests_sent == 3  # HEAD, OPTIONS, GET; no extra checks
+    assert {f.rule for f in report.findings} >= {
+        "HEADER-CSP", "HEADER-NOSNIFF", "HEADER-FRAMING",
+    }
+    assert "HEADER-HSTS" not in {f.rule for f in report.findings}
+    assert all(f.exploit_status == "validation-only"
+               for f in report.findings if f.rule.startswith("HEADER-"))
+
+
+def test_posture_document_rules_skip_non_html_and_error_responses(server):
+    scanner = Scanner(server)
+    from webchallscan.scanner import Response
+    assert scanner._posture_findings(
+        Response(server + "/api", 200, {"content-type": "application/json"}, "{}")
+    ) == []
+    assert scanner._posture_findings(
+        Response(server + "/missing", 404, {"content-type": "text/html"}, "<html></html>")
+    ) == []
+    cors = scanner._posture_findings(Response(
+        server + "/api", 200,
+        {"content-type": "application/json",
+         "access-control-allow-origin": "*",
+         "access-control-allow-credentials": "true",
+         "set-cookie": "session=PRIVATE"},
+        "{}",
+    ))
+    assert [item.rule for item in cors] == ["HEADER-CORS-CONFLICT"]
+    assert "PRIVATE" not in repr(cors)
