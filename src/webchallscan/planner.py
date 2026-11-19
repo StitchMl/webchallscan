@@ -34,6 +34,22 @@ def _safe_json_field_paths(candidate_fields: object) -> list[list[str]]:
     return result
 
 
+def _review_categories(method: str, path: str, params: list[str],
+                       fields: list[list[str]]) -> list[str]:
+    categories = ["response-header-review"]
+    if fields and method == "POST":
+        categories.append("manual-json-body-field-review")
+    if params:
+        categories.append("input-validation-review")
+    if "graphql" in path.lower():
+        categories.append("graphql-operation-discovery")
+    if method != "GET":
+        categories.append("manual-state-change-review")
+    if any(marker in path.lower() for marker in ("password", "login", "session", "reset")):
+        categories.append("authentication-flow-review")
+    return categories
+
+
 def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
     if data.get("schema") != "webchallscan/network-inventory-v1":
         raise ValueError("unsupported inventory schema")
@@ -62,17 +78,7 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
         # Retain *names only* from the already-redacted inventory.
         # Untrusted inventory files cannot inject raw JSON values into plans.
         fields = _safe_json_field_paths(entry.get("json_fields", []))
-        categories = ["response-header-review"]
-        if fields and method == "POST":
-            categories.append("manual-json-body-field-review")
-        if params:
-            categories.append("input-validation-review")
-        if path.lower().endswith("/graphql") or "graphql" in path.lower():
-            categories.append("graphql-operation-discovery")
-        if method != "GET":
-            categories.append("manual-state-change-review")
-        if any(marker in path.lower() for marker in ("password", "login", "session", "reset")):
-            categories.append("authentication-flow-review")
+        categories = _review_categories(method, path, params, fields)
         checks.append({
             "method": method, "path": path, "resource_type": str(resource_type)[:30],
             "parameter_names": sorted(set(params)),
