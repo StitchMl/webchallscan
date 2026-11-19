@@ -135,9 +135,11 @@ class _WebSocket:
             if (b"websocket" not in tokens(b"upgrade")
                     or b"upgrade" not in tokens(b"connection")):
                 raise SessionCaptureError("CDP WebSocket upgrade headers are incomplete")
-            expected = base64.b64encode(hashlib.sha1(
-                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
-            ).digest())  # NOSONAR: RFC 6455 requires SHA-1 for this handshake
+            # RFC 6455 §4.2.2 mandates SHA-1 of a public nonce and fixed GUID.
+            # This is NOT password hashing, signing or security-grade hashing.
+            handshake = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+            digest = hashlib.sha1(handshake, usedforsecurity=False).digest()  # NOSONAR: required by RFC 6455
+            expected = base64.b64encode(digest)
             accept = headers.get(b"sec-websocket-accept", [])
             if len(accept) != 1 or accept[0] != expected:
                 raise SessionCaptureError("CDP WebSocket handshake validation failed")
