@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
-from .http_client import NoRedirect, read_bounded
+from .http_client import NoRedirect, api_handlers, read_bounded
 
 
 _NoRedirect = NoRedirect
@@ -20,9 +20,7 @@ _NoRedirect = NoRedirect
 
 def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verify_tls: bool = True) -> dict:
     req = Request(url, method="GET", headers={**headers, "Accept": "application/json, text/plain, */*"})  # NOSONAR: authorized black-box request to the user-specified target
-    handlers = [_NoRedirect]
-    if not verify_tls:
-        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
+    handlers = api_handlers(verify_tls=verify_tls)
     response = read_bounded(build_opener(*handlers), req, timeout, 65537)
     raw, status = response.body, response.status
     typ = response.headers.get("Content-Type", "").split(";")[0].strip().lower()

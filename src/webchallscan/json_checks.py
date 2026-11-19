@@ -14,7 +14,7 @@ import ssl
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
-from .http_client import NoRedirect, read_bounded
+from .http_client import NoRedirect, api_handlers, read_bounded
 
 
 SCHEMA = "webchallscan/json-cases-v1"
@@ -36,9 +36,7 @@ def _send_json(url: str, body: dict, headers: dict[str, str], timeout: float,
         **headers, "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
     })
-    handlers = [NoRedirect]
-    if not verify_tls:
-        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
+    handlers = api_handlers(verify_tls=verify_tls)
     res = read_bounded(build_opener(*handlers), req, timeout, MAX_RESPONSE + 1)
     if len(res.body) > MAX_RESPONSE:
         raise ValueError("JSON response exceeds 64 KiB")

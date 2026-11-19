@@ -19,7 +19,8 @@ from urllib.request import (
     build_opener,
 )
 
-from .http_client import read_bounded
+from .http_client import (SameOriginRedirectHandler, read_bounded,
+                          scanner_handlers, validate_loopback_proxy)
 from .model import Finding, ScanReport, redact_url
 from .posture import inspect_response
 from .session import BrowserSession
@@ -154,18 +155,6 @@ class PageObservation:
     parameters: tuple[str, ...]
 
 
-class SameOriginRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, origin: tuple[str, str]) -> None:
-        self.origin = origin
-        super().__init__()
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-        parsed = urlsplit(newurl)
-        if (parsed.scheme.lower(), parsed.netloc.lower()) != self.origin:
-            return None
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
 class Scanner:
     def __init__(self, target: str, *, active: bool = False, max_pages: int = 20,
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
@@ -195,34 +184,16 @@ class Scanner:
         self.inventory_urls = tuple(sorted(set(self._clean_url(url) for url in inventory_urls)))
         self.requests_sent = 0
         self.observations: dict[str, PageObservation] = {}
-        context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # NOSONAR: unverified TLS only on opt-in --insecure for CTF targets; default verifies
         self.cookies = CookieJar()
         if session:
             self._import_session_cookies(session)
-        self.opener = build_opener(
-            *([ProxyHandler({"http": self.proxy, "https": self.proxy})] if self.proxy else []),
-            SameOriginRedirectHandler(self.origin),
-            HTTPCookieProcessor(self.cookies),
-            HTTPSHandler(context=context),
-        )
+        self.opener = build_opener(*scanner_handlers(
+            self.origin, self.cookies, verify_tls=verify_tls, proxy=self.proxy,
+        ))
 
     @staticmethod
     def _validate_proxy(proxy: str | None) -> str | None:
-        if proxy is None:
-            return None
-        p = urlsplit(proxy)
-        # Only local interception is supported to prevent accidentally
-        # forwarding authenticated sessions to untrusted proxy servers.
-        if (p.scheme != "http" or p.hostname not in {"127.0.0.1", "localhost", "::1"}
-                or p.username or p.password or p.path not in {"", "/"} or p.query or p.fragment):
-            raise ValueError("--proxy must be an HTTP loopback URL without credentials or path")
-        try:
-            port = p.port
-        except ValueError as exc:
-            raise ValueError("--proxy requires a valid port") from exc
-        if port is None:
-            raise ValueError("--proxy requires an explicit port")
-        return proxy
+        return validate_loopback_proxy(proxy)
 
     def _import_session_cookies(self, session: BrowserSession) -> None:
         host = urlsplit(self.target).hostname or ""
