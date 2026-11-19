@@ -327,8 +327,8 @@ def _safe_headers(value: object) -> tuple[tuple[str, str], ...]:
 
 
 def load_session_file(path: str) -> BrowserSession:
-    # The caller explicitly chooses the local file, which may be outside
-    # the workspace. Limit bytes read and reject symlinks/non-regular files.
+    # Explicitly selected local JSON only, scoped to the working directory.
+    # Limit bytes read and reject symlinks/non-regular files.
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         workspace = Path.cwd().resolve()
@@ -346,7 +346,6 @@ def load_session_file(path: str) -> BrowserSession:
             raise SessionCaptureError("session file must be a simple JSON filename in the working directory")
         file = workspace / filename
         if file.is_symlink() or not file.is_file():
-            raise SessionCaptureError("session input must be a regular file")
             raise SessionCaptureError("session input must be a regular file")
         fd = os.open(file, flags)
         with os.fdopen(fd, "rb") as stream:
