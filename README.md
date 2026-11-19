@@ -145,6 +145,42 @@ validate signatures, try signing keys or claim that the server accepts a
 modified token. Keep the input file private and delete it after review.
 Unlike network scanning, this offline operation needs no `--authorized` flag.
 
+### Explicit JSON API validation (opt-in active POST)
+
+JSON APIs may be tested through an operator-authored case file. This mode
+is **not part of passive crawling**: it issues POST requests only to explicit
+paths, so use a disposable authorized environment and endpoints that can
+tolerate repeated requests.
+
+```bash
+webchallscan --authorized --active --check-json-cases cases.json
+```
+
+Example `cases.json`:
+
+```json
+{
+  "schema": "webchallscan/json-cases-v1",
+  "origin": "https://challenge.example",
+  "cases": [{
+    "path": "/api/evaluate",
+    "kind": "ssti",
+    "body": {"context": {"input": "safe"}},
+    "field": ["context", "input"],
+    "headers": {}
+  }]
+}
+```
+
+Supported kinds are `ssti` (three baseline/arithmetic requests) and
+`nosql` (four repeated scalar/object differential requests). Only the
+selected nested string field is replaced; all other JSON structure is
+preserved. There are at most six cases, 24 requests, and fixed input/output
+caps. All cookies, authorization headers, values, and raw responses are
+omitted from the report. **NoSQL differentials are review candidates, not
+confirmed NoSQL injection.** TLS remains verified unless `--insecure`
+is explicitly selected.
+
 ### Bounded multi-syntax SSTI arithmetic checks
 
 With `--active`, SSTI validation tries the existing Jinja/Twig
