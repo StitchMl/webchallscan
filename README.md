@@ -354,6 +354,16 @@ webchallscan --authorized --validate-api-contract contract.json --proxy http://1
 webchallscan --authorized --active --check-json-cases cases.json --proxy http://127.0.0.1:8080
 ```
 
+### Explicit CSRF headers in JSON test cases
+
+`--check-json-cases` now accepts explicitly supplied `X-CSRF-Token`,
+`X-XSRF-Token` and `X-CSRFToken` alongside its existing authentication
+headers. These values are sent only with explicit
+`--authorized --active --check-json-cases`, never extracted automatically,
+and are not emitted in JSON or human reports. Header values are bounded and
+CR/LF controls are refused. Body fields, including CSRF fields, remain
+structurally unchanged during other-field probes.
+
 ### Explicit JSON API validation (opt-in active POST)
 
 JSON APIs may be tested through an operator-authored case file. This mode
