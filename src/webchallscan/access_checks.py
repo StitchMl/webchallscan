@@ -42,9 +42,9 @@ def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = T
     cases = data.get("cases")
     if not isinstance(cases, list) or not 1 <= len(cases) <= 12 or not 0.2 <= timeout <= 15:
         raise ValueError("maximum 12 cases and timeout 0.2-15 seconds")
-    findings = []
-    results = []
-    for index, case in enumerate(cases):
+    # Parse all cases before making the first authenticated request.
+    prepared = []
+    for case in cases:
         if not isinstance(case, dict) or set(case) != {"path", "owner_headers", "other_headers"}:
             raise ValueError("each case needs path and both role header sets")
         path = case["path"]
@@ -60,6 +60,11 @@ def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = T
             ):
                 raise ValueError("role headers must be authorization, cookie or x-api-key only")
             header_sets.append(h)
+        prepared.append((path, header_sets))
+
+    findings = []
+    results = []
+    for index, (path, header_sets) in enumerate(prepared):
         url = origin + path
         kwargs = {}
         if not verify_tls:
