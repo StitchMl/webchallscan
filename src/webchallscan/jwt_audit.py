@@ -4,7 +4,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 _ALLOWED_B64URL = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -81,9 +83,34 @@ def audit_jwt(token: str) -> dict:
 
 
 def audit_jwt_file(path: str) -> dict:
-    file = Path(path)
-    if file.stat().st_size > MAX_TOKEN_BYTES:
+    """Inspect only an explicit, bounded local token file in the work area."""
+    workspace = Path.cwd().resolve()
+    supplied = Path(path)
+    try:
+        relative = supplied.relative_to(workspace) if supplied.is_absolute() else supplied
+    except ValueError as exc:
+        raise ValueError("JWT file must be inside the working directory") from exc
+    filename = relative.name
+    if (len(relative.parts) != 1
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.(?:jwt|txt)", filename)
+            or ".." in filename):
+        raise ValueError("JWT file must be a simple .jwt or .txt filename")
+    file = workspace / filename
+    if file.is_symlink() or not file.is_file():
+        raise ValueError("JWT input must be a regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(file, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("JWT input must be a regular file")
+            raw = stream.read(MAX_TOKEN_BYTES + 1)
+    except OSError as exc:
+        raise ValueError("cannot read JWT input file") from exc
+    if len(raw) > MAX_TOKEN_BYTES:
         raise ValueError("JWT input file is too large")
-    # Never echo input text or an exception containing token material.
-    token = file.read_text(encoding="utf-8").strip()
+    try:
+        token = raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid JWT input encoding") from exc
     return audit_jwt(token)
