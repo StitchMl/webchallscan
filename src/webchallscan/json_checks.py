@@ -102,11 +102,15 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
         if not all(isinstance(name, str) and FIELDS.fullmatch(name) for name in field):
             raise ValueError("invalid JSON field names")
         if not isinstance(headers, dict) or any(
-            not isinstance(k, str) or k.lower() not in {"authorization", "cookie", "x-api-key"}
-            or not isinstance(v, str) or "\r" in v or "\n" in v
+            not isinstance(k, str) or k.lower() not in {
+                "authorization", "cookie", "x-api-key", "x-csrf-token",
+                "x-xsrf-token", "x-csrftoken",
+            }
+            or not isinstance(v, str) or len(v) > 4096
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in v)
             for k, v in headers.items()
         ):
-            raise ValueError("JSON case headers may contain authentication only")
+            raise ValueError("JSON case headers may contain authentication and CSRF tokens only")
         cursor = body
         try:
             for name in field[:-1]:
