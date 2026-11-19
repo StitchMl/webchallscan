@@ -145,6 +145,18 @@ validate signatures, try signing keys or claim that the server accepts a
 modified token. Keep the input file private and delete it after review.
 Unlike network scanning, this offline operation needs no `--authorized` flag.
 
+### Bounded multi-syntax SSTI arithmetic checks
+
+With `--active`, SSTI validation tries the existing Jinja/Twig
+`{{7340*3}}` probe first. With the additional opt-in `--ssti-alternates`, the scanner may
+also test `${7340*3}`, `<%= 7340*3 %>`, and `#{7340*3}`
+(in that deterministic order). Alternate syntax needs **two identical
+computed responses** absent from the baseline. Each probe pair respects
+`--max-requests`; no destructive payloads or recovery attempts are sent.
+Alternate-engine matches are validation-only observations that require
+manual confirmation of the engine and exploitability. The extra probes are
+**off by default** to preserve current request-budget priorities and scan results.
+
 ### HTTP metadata and explicit GET JavaScript discovery
 
 Existing `HEAD` and `OPTIONS` responses now produce informational notes

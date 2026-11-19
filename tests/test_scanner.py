@@ -56,6 +56,9 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == "/template":
             value = values.get("message", [""])[0]
             self._send(SSTI_RESULT if value == SSTI_PROBE else value)
+        elif p.path == "/template-alt":
+            value = values.get("message", [""])[0]
+            self._send(SSTI_RESULT if value == "${7340*3}" else value)
         elif p.path == "/escaped":
             self._send(escape(values.get("x7", [""])[0]))
         elif p.path == "/session":
@@ -470,3 +473,38 @@ def test_javascript_discovery_explicit_get_only():
         "/api/get", "/api/info", "/api/json", "/api/list",
         "/v1/search?q=x",
     ]
+
+def test_alt_ssti_arithmetic_needs_repeated_identical_evidence(server):
+    report = Scanner(server + "/template-alt?message=hello", active=True,
+                     ssti_alternates=True, max_pages=1, max_requests=12).scan()
+    found = [f for f in report.findings
+             if f.title == "Alternative template arithmetic syntax evaluated"]
+    assert found
+    assert found[0].proof_payload == "${7340*3}"
+    assert found[0].expected_evidence == "22020"
+    assert found[0].exploit_status == "validation-only"
+    assert not found[0].recovery_payload
+    assert report.requests_sent <= 12
+
+
+def test_alt_ssti_respects_budget_and_does_not_claim_reflection(server):
+    # Initial HEAD/OPTIONS/GET and two baseline/probe requests fit; no
+    # additional pair can run when the request budget is exactly five.
+    report = Scanner(server + "/template-alt?message=hello", active=True,
+                     ssti_alternates=True, max_pages=1, max_requests=5).scan()
+    assert report.requests_sent == 5
+    assert not any(f.title == "Alternative template arithmetic syntax evaluated"
+                   for f in report.findings)
+    echo = Scanner(server + "/reflect?cmd=hello", active=True,
+                   max_pages=1, max_requests=12).scan()
+    assert not any(f.title == "Alternative template arithmetic syntax evaluated"
+                   for f in echo.findings)
+
+def test_alternate_ssti_is_off_by_default_and_requires_cli_opt_in(server, capsys):
+    report = Scanner(server + "/template-alt?message=hello", active=True,
+                     max_pages=1, max_requests=20).scan()
+    assert not any(f.title == "Alternative template arithmetic syntax evaluated"
+                   for f in report.findings)
+    from webchallscan.cli import main
+    assert main([server, "--authorized", "--ssti-alternates"]) == 2
+    assert "requires --active" in capsys.readouterr().err

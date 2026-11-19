@@ -28,6 +28,11 @@ CMD_PROBE = ";printf WCSA;printf $((7321+19));printf WCSZ"
 CMD_RESULT = "WCSA7340WCSZ"
 SSTI_PROBE = "{{7340*3}}"
 SSTI_RESULT = "22020"
+SSTI_ALTERNATE_PROBES = (
+    ("dollar-brace", "${7340*3}"),
+    ("erb-ejs", "<%= 7340*3 %>"),
+    ("hash-brace", "#{7340*3}"),
+)
 XSS_PROBE = "<wcs7340>"
 MAX_BODY = 1_000_000
 COMMENT_HINTS = ("TODO", "FIXME", "BUG", "HACK", "FLAG", "SECRET", "PASSWORD", "ADMIN", "BACKDOOR", "DEBUG")
@@ -166,13 +171,15 @@ class Scanner:
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
                  profile: str = "desktop", session: BrowserSession | None = None,
                  proxy: str | None = None,
-                 inventory_urls: tuple[str, ...] = ()) -> None:
+                 inventory_urls: tuple[str, ...] = (),
+                 ssti_alternates: bool = False) -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
         self.target = self._clean_url(target)
         self.origin = (parsed.scheme.lower(), parsed.netloc.lower())
         self.active = active
+        self.ssti_alternates = ssti_alternates
         self.max_pages = max(1, max_pages)
         self.timeout = max(0.1, timeout)
         self.max_requests = max(1, max_requests)
@@ -508,6 +515,37 @@ class Scanner:
                 expected_evidence=SSTI_RESULT, recovery_payload=recovery,
                 flag_path="Jinja expression syntax was verified; the recovery payload reads common CTF flag paths.",
             )
+        if (self.ssti_alternates and finding.rule == "WEB-SSTI-001"
+                and SSTI_RESULT not in baseline.text):
+            # Repeated arithmetic evaluations only; never infer an RCE payload.
+            # Each pair is budget-checked and the target is not probed at all
+            # unless the operator explicitly enabled --active.
+            for family, alternate in SSTI_ALTERNATE_PROBES:
+                if self.requests_sent + 2 > self.max_requests:
+                    break
+                first, second = send(alternate), send(alternate)
+                if (SSTI_RESULT not in alternate
+                        and SSTI_RESULT in first.text and SSTI_RESULT in second.text
+                        and first.status == second.status
+                        and sha256(first.text.encode()).digest() ==
+                            sha256(second.text.encode()).digest()):
+                    return self._finding(
+                        rule=finding.rule,
+                        title="Alternative template arithmetic syntax evaluated",
+                        severity="high", confidence="medium", url=finding.url,
+                        parameter=finding.parameter,
+                        evidence=(f"Two identical {family} arithmetic probes yielded "
+                                  f"computed result {SSTI_RESULT}, absent from the "
+                                  "baseline and submitted expression; template engine "
+                                  "and exploitability still require manual verification."),
+                        vector=(f"Repeat {method} {redact_url(finding.url)} with "
+                                f"{finding.parameter}={alternate!r}."),
+                        patch="Never render user-supplied template source; pass untrusted input only as data.",
+                        exploit_status="validation-only", method=method,
+                        request_fields=finding.request_fields,
+                        proof_payload=alternate, expected_evidence=SSTI_RESULT,
+                        flag_path="Only arithmetic evaluation was observed; no automatic recovery payload exists.",
+                    )
         if finding.rule == "WEB-CMDI-001" and CMD_RESULT in tested.text and CMD_RESULT not in baseline.text and CMD_RESULT not in CMD_PROBE:
             recovery = ";printf WCSA;cat /flag 2>/dev/null || cat /flag.txt 2>/dev/null;printf WCSZ"
             return self._finding(rule=finding.rule, title="Command injection arithmetic execution confirmed", severity="critical", confidence="high",
@@ -774,7 +812,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
                   max_requests: int = 80, verify_tls: bool = True,
                   sessions: dict[str, BrowserSession] | None = None,
                   proxy: str | None = None,
-                  inventory_urls: tuple[str, ...] = ()) -> ScanReport:
+                  inventory_urls: tuple[str, ...] = (),
+                  ssti_alternates: bool = False) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -784,7 +823,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
         scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
                           max_requests=max_requests, verify_tls=verify_tls, profile=profile,
                           session=(sessions or {}).get(profile), proxy=proxy,
-                          inventory_urls=inventory_urls)
+                          inventory_urls=inventory_urls,
+                          ssti_alternates=ssti_alternates)
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
