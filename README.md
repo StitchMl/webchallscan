@@ -272,6 +272,21 @@ stay hidden. Work entirely inside Burp Suite Community: capture the request in
 **Proxy > HTTP history**, right-click **Send to Repeater**, edit the named
 parameter to the printed payload, and send.
 
+To print a **redacted Raw HTTP/1.1 request template** alongside the existing
+manual Repeater steps, add `--burp-raw`:
+
+```powershell
+webchallscan --authorized --listen-session --active --burp-procedure --burp-raw
+```
+
+This is a **template**, not an exact capture: query values, CSRF tokens,
+hidden form defaults and cookie values are masked by default. The proven
+probe value is placed into its parameter, and the form `Content-Length` is
+recalculated. Replace redacted placeholders with the values from Burp's
+live HTTP history before sending in Repeater. With `--include-session-secrets`,
+the Cookie header and original non-probe query values can be printed; form
+defaults remain redacted.
+
 When a local replay must preserve the live authenticated session, print the
 cookie values too:
 
