@@ -48,6 +48,46 @@ def _validate_path(value):
 def _public(response):
     return {k: response[k] for k in ("status", "length", "digest")}
 
+def _preflight_contract_cases(cases: list, roles: dict) -> None:
+    """Reject malformed cases before any authenticated HTTP request is sent."""
+    for case in cases:
+        if not isinstance(case, dict):
+            raise ValueError("invalid case")
+        _validate_path(case.get("path"))
+        kind = case.get("kind")
+        query = case.get("query", {})
+        if not isinstance(query, dict) or len(query) > 10 or any(
+            not isinstance(k, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,60}", k)
+            or not isinstance(v, str) or len(v) > 200 for k, v in query.items()
+        ):
+            raise ValueError("only bounded non-secret query values are accepted")
+        if kind == "idor":
+            owner, outsider = case.get("owner"), case.get("outsider")
+            if owner == outsider or owner not in roles or outsider not in roles:
+                raise ValueError("IDOR needs distinct, known owner and outsider roles")
+            denied = case.get("denied_statuses", [401, 403, 404])
+            if (not isinstance(denied, list) or not denied or
+                    any(type(code) is not int or code not in (401, 403, 404)
+                        for code in denied)):
+                raise ValueError("invalid denied statuses")
+            marker = case.get("expected_marker")
+            if marker is not None and (not isinstance(marker, str)
+                                       or not 4 <= len(marker) <= 80):
+                raise ValueError("invalid expected marker")
+        elif kind == "fuzz":
+            role, field = case.get("role"), case.get("parameter")
+            if role not in roles or not isinstance(field, str) or field not in query:
+                raise ValueError("fuzz case needs an existing query parameter and role")
+        elif kind == "business":
+            role, expected = case.get("role"), case.get("expected_statuses")
+            if (role not in roles or not isinstance(expected, list) or not expected
+                    or any(type(code) is not int or not 100 <= code <= 599
+                           for code in expected)):
+                raise ValueError("business case requires explicit role and expected statuses")
+        else:
+            raise ValueError("supported case kinds: idor, fuzz, business")
+
+
 def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True, proxy=None):
     """Run explicit low-impact GET contracts. Maximum 30 HTTP requests."""
     if not isinstance(data, dict) or data.get("schema") != "webchallscan/api-contract-v1":
@@ -72,6 +112,7 @@ def validate_contract(data, *, timeout=5.0, fetch=None, verify_tls=True, proxy=N
                     if isinstance(case, dict) else 31 for case in cases)
     if estimated > 30:
         raise ValueError("request budget would exceed 30; split the contract")
+    _preflight_contract_cases(cases, roles)
     # Reject unsafe proxy settings even when an injected test transport is used.
     from .http_client import validate_loopback_proxy
     validate_loopback_proxy(proxy)
