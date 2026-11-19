@@ -24,7 +24,8 @@ def history():
             + "</items>")
 
 
-def test_default_selection_remains_first(tmp_path):
+def test_default_selection_remains_first(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "history.xml", tmp_path / "one.json"
     source.write_text(history())
     data = export_burp_session(str(source), str(dest), "https://lab.example")
@@ -36,7 +37,8 @@ def test_default_selection_remains_first(tmp_path):
     assert "FIRSTPRIVATE" not in repr(data)
 
 
-def test_exact_path_and_index_select_specific_request(tmp_path):
+def test_exact_path_and_index_select_specific_request(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "history.xml", tmp_path / "second.json"
     source.write_text(history())
     data = export_burp_session(str(source), str(dest), "https://lab.example",
@@ -50,7 +52,8 @@ def test_exact_path_and_index_select_specific_request(tmp_path):
 
 @pytest.mark.parametrize("path", ["/api/notfound", "//elsewhere", "/api/../a",
                                   "/api/%2f", "/api/a?token=x", "/api/a#fragment"])
-def test_invalid_or_unmatched_path_never_creates_session_file(tmp_path, path):
+def test_invalid_or_unmatched_path_never_creates_session_file(tmp_path, path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "history.xml", tmp_path / "secret.json"
     source.write_text(history())
     with pytest.raises(ValueError):
@@ -60,7 +63,8 @@ def test_invalid_or_unmatched_path_never_creates_session_file(tmp_path, path):
 
 
 @pytest.mark.parametrize("index", [0, -1, 501, "2", True, 4])
-def test_invalid_or_unmatched_request_index_refused(tmp_path, index):
+def test_invalid_or_unmatched_request_index_refused(tmp_path, index, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "history.xml", tmp_path / "secret.json"
     source.write_text(history())
     with pytest.raises(ValueError):
@@ -69,7 +73,8 @@ def test_invalid_or_unmatched_request_index_refused(tmp_path, index):
     assert not dest.exists()
 
 
-def test_cli_selected_session_and_flag_isolation(tmp_path, capsys):
+def test_cli_selected_session_and_flag_isolation(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "history.xml", tmp_path / "selected.json"
     source.write_text(history())
     arguments = [
