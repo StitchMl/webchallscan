@@ -55,7 +55,8 @@ def test_limit_field_count_and_nested_depth():
     assert json_string_field_hints(_item(body=names), "POST") == [["valid", "input"]]
 
 
-def test_burp_inventory_adds_only_paths_deduped_and_no_replays(tmp_path):
+def test_burp_inventory_adds_only_paths_deduped_and_no_replays(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     root = ET.Element("items")
     root.append(_item())
     root.append(_item())
@@ -69,7 +70,8 @@ def test_burp_inventory_adds_only_paths_deduped_and_no_replays(tmp_path):
     assert "csrf_token" not in json.dumps(report)
 
 
-def test_no_invented_json_fields_for_get_history(tmp_path):
+def test_no_invented_json_fields_for_get_history(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     root = ET.Element("items")
     root.append(_item(method="GET"))
     file = tmp_path / "history.xml"
