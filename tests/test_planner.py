@@ -35,3 +35,31 @@ def test_non_path_and_bad_schema_rejected():
     data["schema"] = "unknown"
     with pytest.raises(ValueError):
         plan_inventory(data)
+
+
+def test_get_inventory_urls_filters_writes_and_replaces_values():
+    from webchallscan.planner import inventory_get_urls
+    data = inventory()
+    data["endpoints"].append({"method": "GET", "path": "/api/items",
+                              "parameters": ["id", "q"]})
+    urls = inventory_get_urls(data, "https://ctf.example/start")
+    assert urls == (
+        "https://ctf.example/api/items?id=WCSBASE&q=WCSBASE",
+        "https://ctf.example/search?q=WCSBASE",
+    )
+    assert all("graphql" not in url for url in urls)
+
+
+def test_get_inventory_urls_rejects_origin_mismatch_and_unsafe_paths():
+    from webchallscan.planner import inventory_get_urls
+    with pytest.raises(ValueError):
+        inventory_get_urls(inventory(), "https://other.example/")
+    data = inventory()
+    data["endpoints"].extend([
+        {"method": "GET", "path": "/../admin", "parameters": []},
+        {"method": "GET", "path": "/api/%2fhidden", "parameters": []},
+        {"method": "GET", "path": "/okay", "parameters": ["token=secret"]},
+    ])
+    assert inventory_get_urls(data, "https://ctf.example/") == (
+        "https://ctf.example/search?q=WCSBASE",
+    )
