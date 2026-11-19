@@ -145,6 +145,18 @@ validate signatures, try signing keys or claim that the server accepts a
 modified token. Keep the input file private and delete it after review.
 Unlike network scanning, this offline operation needs no `--authorized` flag.
 
+### HTTP metadata and explicit GET JavaScript discovery
+
+Existing `HEAD` and `OPTIONS` responses now produce informational notes
+for the allowed HTTP methods in `Allow` and the presence of
+`Server` / `X-Powered-By` banners. Their values and version strings
+are not copied into findings. This requires no additional requests.
+
+JavaScript static route detection also supports explicit GET calls in
+`fetch(url, {method: 'GET'})`, `$.get`, `$.getJSON`,
+`$.ajax({url, type: 'GET'})` and `axios({method: 'GET', url})`.
+Non-GET calls are **not** converted into automatic scanner requests.
+
 ### Passive source-comment hints
 
 HTML comments on visited pages and line/block comments in JavaScript files
