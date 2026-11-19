@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import secrets
 import socket
 import ssl
@@ -213,6 +214,28 @@ def _valid_http_url(value: object) -> str:
     return value
 
 
+_COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
+_COOKIE_DOMAIN = re.compile(r"^\\.?[A-Za-z0-9.-]{1,253}$")
+
+
+def validate_session_cookie(name: str, value: str,
+                            domain: str = "", path: str = "/") -> None:
+    """Reject cookie scope/header injection before constructing HTTP cookies."""
+    if not isinstance(name, str) or not _COOKIE_NAME.fullmatch(name):
+        raise SessionCaptureError("invalid cookie name")
+    if (not isinstance(value, str) or len(value) > 4096
+            or any(ord(ch) < 32 or ord(ch) == 127 or ch == ";" for ch in value)):
+        raise SessionCaptureError("invalid cookie value")
+    if (not isinstance(domain, str)
+            or (domain and (not _COOKIE_DOMAIN.fullmatch(domain)
+                            or ".." in domain or domain.endswith(".")))):
+        raise SessionCaptureError("invalid cookie domain")
+    if (not isinstance(path, str) or not path.startswith("/")
+            or len(path) > 2048
+            or any(ord(ch) < 32 or ord(ch) == 127 or ch == ";" for ch in path)):
+        raise SessionCaptureError("invalid cookie path")
+
+
 def _parse_cookies(value: object) -> tuple[SessionCookie, ...]:
     if not isinstance(value, list) or len(value) > 500:
         raise SessionCaptureError("cookies must be a JSON array with at most 500 entries")
@@ -223,6 +246,12 @@ def _parse_cookies(value: object) -> tuple[SessionCookie, ...]:
             raise SessionCaptureError("each cookie needs name/value and only documented fields")
         if not isinstance(item["name"], str) or not isinstance(item["value"], str):
             raise SessionCaptureError("cookie name and value must be strings")
+        validate_session_cookie(item["name"], item["value"],
+                                item.get("domain", ""), item.get("path", "/"))
+        if (type(item.get("secure", False)) is not bool
+                or type(item.get("httpOnly", False)) is not bool
+                or not isinstance(item.get("sameSite", ""), str)):
+            raise SessionCaptureError("invalid cookie security attributes")
         expires = item.get("expires")
         if expires is not None and not isinstance(expires, (int, float)):
             raise SessionCaptureError("cookie expires must be a number or null")
