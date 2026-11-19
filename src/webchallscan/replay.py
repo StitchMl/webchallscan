@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .model import REDACTED, Finding, ScanReport, redact_url
 
@@ -26,6 +26,69 @@ def _request_line(finding: Finding, include_secrets: bool) -> str:
         )
         path = f"{path}?{query}"
     return f"{finding.method} {path} HTTP/1.1"
+
+
+def _raw_http_template(finding: Finding, include_secrets: bool) -> str:
+    """Build a redacted HTTP/1.1 Repeater template for an existing proof.
+
+    This is a template, not a replayable capture: hidden fields and query
+    values remain placeholders unless a proof parameter replaces them.
+    """
+    if finding.method not in {"GET", "POST"}:
+        return "Raw HTTP template not available for this method."
+    if finding.method == "POST" and finding.content_type != "application/x-www-form-urlencoded":
+        return "Raw HTTP template not available for this content type."
+    parsed = urlsplit(finding.url)
+    location = _parameter_location(finding)
+    proof = finding.proof_payload or finding.recovery_payload
+    query = [
+        (name, value if include_secrets else REDACTED)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+    ]
+    if location == "query string" and finding.parameter:
+        replaced = False
+        for i, (name, _) in enumerate(query):
+            if name == finding.parameter:
+                query[i] = (name, proof)
+                replaced = True
+        if not replaced:
+            query.append((finding.parameter, proof))
+    target = parsed.path or "/"
+    if query:
+        target += "?" + urlencode(query)
+    host = parsed.netloc
+    headers = [
+        f"{finding.method} {target} HTTP/1.1",
+        f"Host: {host}",
+    ]
+    for name, value in finding.client_headers:
+        if name.lower() in {"user-agent", "accept-language",
+                            "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}:
+            if not any(c in name + value for c in "\r\n"):
+                headers.append(f"{name}: {value}")
+    if finding.session_cookies:
+        cookies = "; ".join(
+            f"{name}={value if include_secrets else REDACTED}"
+            for name, value in finding.session_cookies
+            if not any(c in name + value for c in "\r\n")
+        )
+        if cookies:
+            headers.append(f"Cookie: {cookies}")
+    body = ""
+    if finding.method == "POST":
+        fields = [
+            (name, proof if name == finding.parameter and location == "request body"
+             else REDACTED)
+            for name, _ in finding.request_fields
+        ]
+        if finding.parameter and location == "request body" and not any(
+            name == finding.parameter for name, _ in fields
+        ):
+            fields.append((finding.parameter, proof))
+        body = urlencode(fields)
+        headers.append("Content-Type: application/x-www-form-urlencoded")
+        headers.append(f"Content-Length: {len(body.encode('utf-8'))}")
+    return "\r\n".join(headers) + "\r\n\r\n" + body
 
 
 def _finding_steps(finding: Finding, include_secrets: bool) -> list[str]:
@@ -66,7 +129,8 @@ def _finding_steps(finding: Finding, include_secrets: bool) -> list[str]:
     return lines
 
 
-def render_burp_procedure(report: ScanReport, include_secrets: bool = False) -> str:
+def render_burp_procedure(report: ScanReport, include_secrets: bool = False,
+                          raw_http: bool = False) -> str:
     """Return a manual, copy-free Burp Repeater procedure (Community-friendly).
 
     No files are written and nothing is auto-imported. Each reproducible finding
@@ -85,5 +149,11 @@ def render_burp_procedure(report: ScanReport, include_secrets: bool = False) -> 
         return "\n".join(header)
     blocks = []
     for finding in findings:
-        blocks.append("\n".join(_finding_steps(finding, include_secrets)))
+        steps = _finding_steps(finding, include_secrets)
+        if raw_http:
+            steps.extend([
+                "    Raw HTTP request template (replace [REDACTED] values before sending):",
+                _raw_http_template(finding, include_secrets),
+            ])
+        blocks.append("\n".join(steps))
     return "\n".join(header) + "\n\n".join(blocks) + "\n"

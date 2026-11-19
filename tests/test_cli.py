@@ -72,3 +72,8 @@ def test_from_inventory_cli_only_seeds_explicit_same_origin(monkeypatch, tmp_pat
     assert main(["https://wrong.example/", "--authorized",
                  "--from-inventory", str(file)]) == 2
     assert "differs" in capsys.readouterr().err
+
+
+def test_burp_raw_requires_burp_procedure(capsys):
+    assert main(["http://127.0.0.1/", "--authorized", "--burp-raw"]) == 2
+    assert "--burp-procedure" in capsys.readouterr().err
