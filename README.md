@@ -102,6 +102,14 @@ off-host addresses, oversized responses (more than 2 MB) and invalid JSON
 before returning browser metadata. Environment proxy settings cannot cause
 the session's local browser discovery traffic to leave the machine.
 
+### CDP WebSocket handshake integrity
+
+The local CDP WebSocket upgrade now validates the required `Upgrade`,
+`Connection` and exact `Sec-WebSocket-Accept` headers, not merely a
+matching substring elsewhere in the HTTP response. Its bounded reader
+preserves the first frame even when the server sends it immediately after
+the HTTP 101 handshake. Invalid upgrades are rejected and sockets closed.
+
 ### CDP transport safety
 
 The local CDP WebSocket reader now rejects frames larger than **2 MB**
