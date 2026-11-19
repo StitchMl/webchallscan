@@ -26,6 +26,27 @@ webchallscan https://challenge.example/ --authorized --profile mobile
 webchallscan https://challenge.example/ --authorized --format json > report.json
 ```
 
+### Readable terminal reports
+
+Text reports now default to a **compact triage layout** with a severity
+summary, grouped findings, wrapped evidence, actionable fixes, and readable
+coverage/error sections. ANSI severity colors are enabled automatically
+only for interactive terminals. Pipe or redirect output without escape codes
+by default, or select a mode explicitly:
+
+```bash
+webchallscan https://challenge.example/ --authorized --color always
+webchallscan https://challenge.example/ --authorized --color never > scan.txt
+webchallscan https://challenge.example/ --authorized --active --verbose
+webchallscan https://challenge.example/ --authorized --format json > scan.json
+```
+
+`--verbose` restores full vectors, replay fields, expected evidence, and
+recovery guidance in the text view. `--color auto|always|never` controls only
+the presentation. The JSON schema, underlying findings, privacy redaction,
+exit codes and request behavior are unchanged. `NO_COLOR` and non-interactive
+output are respected by `--color auto`.
+
 ### Current browser session
 
 For a normally opened Chrome or Edge window, load the bundled unpacked
