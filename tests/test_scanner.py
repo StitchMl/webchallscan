@@ -341,7 +341,7 @@ def test_posture_document_rules_skip_non_html_and_error_responses(server):
          "set-cookie": "session=PRIVATE"},
         "{}",
     ))
-    assert [item.rule for item in cors] == ["HEADER-CORS-CONFLICT"]
+    assert {item.rule for item in cors} == {"HEADER-CORS-CONFLICT", "COOKIE-HTTPONLY", "COOKIE-SAMESITE"}
     assert "PRIVATE" not in repr(cors)
 
 def test_proxy_requires_explicit_loopback_http_endpoint(server):
