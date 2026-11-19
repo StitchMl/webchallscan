@@ -80,3 +80,39 @@ def test_burp_session_rejects_dtd(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         export_burp_session(str(source), str(tmp_path / "session.json"),
                             "https://lab.example")
+
+
+def test_session_export_refuses_input_outside_working_directory(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "outside.xml"
+    external.write_text(burp_xml())
+    monkeypatch.chdir(workspace)
+    output = workspace / "private.json"
+    for source in (str(external), "../outside.xml"):
+        with pytest.raises(ValueError, match="working directory"):
+            export_burp_session(source, str(output), "https://lab.example")
+        assert not output.exists()
+    symlink = workspace / "alias.xml"
+    symlink.symlink_to(external)
+    with pytest.raises(ValueError, match="working directory"):
+        export_burp_session(str(symlink), str(output), "https://lab.example")
+    assert not output.exists()
+
+
+def test_session_export_rejects_non_xml_and_oversize_without_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / "private.json"
+    not_xml = tmp_path / "bad.txt"
+    not_xml.write_text(burp_xml())
+    with pytest.raises(ValueError, match="regular .xml"):
+        export_burp_session(str(not_xml), str(output), "https://lab.example")
+    oversized = tmp_path / "large.xml"
+    oversized.write_bytes(b" " * 5_000_001)
+    with pytest.raises(ValueError, match="5 MB"):
+        export_burp_session(str(oversized), str(output), "https://lab.example")
+    directory = tmp_path / "directory.xml"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular .xml"):
+        export_burp_session(str(directory), str(output), "https://lab.example")
+    assert not output.exists()
