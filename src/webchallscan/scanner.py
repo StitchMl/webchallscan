@@ -729,6 +729,61 @@ class Scanner:
                     routes.add(found)
         return sorted(routes)
 
+    @staticmethod
+    def _static_api_hints(source: str) -> list[tuple[str, str]]:
+        """Catalog literal API route hints; do not enqueue non-GET methods."""
+        source = source[:MAX_BODY]
+        routes: set[tuple[str, str]] = set()
+        for method, path in re.findall(
+            r"""\baxios\.(post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]""",
+            source, re.I,
+        ):
+            routes.add((method.upper(), path))
+        for path, method in re.findall(
+            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
+            source, re.I,
+        ):
+            routes.add((method.upper(), path))
+        for path, method in re.findall(
+            r"""\$\.ajax\s*\(\s*\{\s*url\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:method|type)\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
+            source, re.I,
+        ):
+            routes.add((method.upper(), path))
+        for path in re.findall(
+            r"""['"](/(?:api|v[1-9][0-9]*|admin|internal)/[^'"\s]{0,160})['"]""",
+            source, re.I,
+        ):
+            if not any(found == path for _, found in routes):
+                routes.add(("UNKNOWN", path))
+        return sorted((method, path) for method, path in routes
+                      if (path.startswith(("/", "./", "../", "http://", "https://"))
+                          and not path.startswith("//")
+                          and not any(ch in path for ch in ("{", "}", "\\", "\r", "\n"))))[:20]
+
+    def _js_api_findings(self, response: Response) -> list[Finding]:
+        if response.status != 200:
+            return []
+        out = []
+        for method, path in self._static_api_hints(response.text):
+            try:
+                absolute = urljoin(response.url, path)
+                parsed = urlsplit(absolute)
+                if (not self._in_scope(absolute) or parsed.username or parsed.password
+                        or parsed.scheme not in {"http", "https"}):
+                    continue
+            except ValueError:
+                continue
+            out.append(self._finding(
+                rule="WEB-JS-API-HINT-001",
+                title="Static JavaScript API route hint",
+                severity="info", confidence="low", url=absolute,
+                method=method, evidence=(f"Literal {method} API route annotation; "
+                                         "reachability and authorization have not been checked."),
+                vector=f"Review the source in GET {redact_url(response.url)}; no request was sent to this route.",
+                patch="Apply server-side authorization and input validation on every API route.",
+            ))
+        return out
+
     def scan(self) -> ScanReport:
         report = ScanReport(self.target, self.active, profiles=(self.profile,),
                             session_source=self.session.source if self.session else "none")
@@ -780,6 +835,7 @@ class Scanner:
                             routes.extend(self._static_get_routes(js.text))
                             report.findings.extend(self._source_map_hints(js))
                             report.findings.extend(self._js_comment_hints(js))
+                            report.findings.extend(self._js_api_findings(js))
                     except (URLError, OSError, RuntimeError, ValueError):
                         continue
             discovered_routes += len(routes)

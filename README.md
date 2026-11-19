@@ -248,6 +248,19 @@ When multiple Set-Cookie header lines are collapsed by a source, only the
 available header value can be inspected; absence of a signal is not proof
 of a safe session configuration.
 
+### Non-GET API routes and minified bundle hints
+
+The scanner now records informational route hints in JavaScript files it
+already fetches from same-origin pages. It recognizes literal
+`axios.post/put/patch/delete`, `fetch(url, {method: ...})`,
+`$.ajax({url, method/type})`, and quoted `/api/`, `/v1/`,
+`/admin/`, `/internal/` paths in minified bundles.
+
+These hints are **never added to the crawler request queue** or used as
+active probes. The reported method may be `UNKNOWN` for a bare string.
+URLs have query values redacted, and foreign-origin URLs are ignored.
+This is source inventory, not proof an endpoint exists or is vulnerable.
+
 ### HTTP metadata and explicit GET JavaScript discovery
 
 Existing `HEAD` and `OPTIONS` responses now produce informational notes
