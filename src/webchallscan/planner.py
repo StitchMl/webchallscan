@@ -36,7 +36,23 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
         if not isinstance(params, list) or any(not isinstance(p, str) for p in params):
             raise ValueError("invalid parameter names")
         resource_type = entry.get("type", "Other")
+        # Retain *names only* from the already-redacted inventory.
+        # Untrusted inventory files cannot inject raw JSON values into plans.
+        candidate_fields = entry.get("json_fields", [])
+        if not isinstance(candidate_fields, list) or len(candidate_fields) > 12:
+            raise ValueError("invalid JSON field hints")
+        fields = []
+        for names in candidate_fields:
+            if not isinstance(names, list) or not 1 <= len(names) <= 5:
+                raise ValueError("invalid nested JSON field hints")
+            if not all(isinstance(name, str)
+                       and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", name)
+                       for name in names):
+                raise ValueError("unsafe JSON field name")
+            fields.append(names)
         categories = ["response-header-review"]
+        if fields and method == "POST":
+            categories.append("manual-json-body-field-review")
         if params:
             categories.append("input-validation-review")
         if path.lower().endswith("/graphql") or "graphql" in path.lower():
@@ -48,6 +64,7 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
         checks.append({
             "method": method, "path": path, "resource_type": str(resource_type)[:30],
             "parameter_names": sorted(set(params)),
+            "json_field_paths": sorted(fields) if method == "POST" else [],
             "checks": categories,
             "active_test_status": "not-executed",
             "reason": "Redacted inventory has no replayable request bodies, tokens, or baseline."
