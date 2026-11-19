@@ -15,6 +15,19 @@ def _redacted_cookies(finding: Finding) -> str:
     return "; ".join(name + "=" + REDACTED for name in names)
 
 
+def _substitute_proof(finding: Finding, query: list, body: list) -> tuple[list, list]:
+    in_body = finding.method == "POST" and finding.parameter in {name for name, _ in body}
+    if in_body:
+        body = [(name, finding.proof_payload if name == finding.parameter else value)
+                for name, value in body]
+        return query, body
+    query = [(name, finding.proof_payload if name == finding.parameter else value)
+             for name, value in query]
+    if finding.parameter and finding.parameter not in {name for name, _ in query}:
+        query.append((finding.parameter, finding.proof_payload))
+    return query, body
+
+
 def _replay_parts(finding: Finding) -> tuple[str, str | None] | None:
     if finding.method not in {"GET", "POST"} or not finding.proof_payload:
         return None
@@ -23,15 +36,7 @@ def _replay_parts(finding: Finding) -> tuple[str, str | None] | None:
     url = urlsplit(finding.url)
     query = [(name, REDACTED) for name, _ in parse_qsl(url.query, keep_blank_values=True)]
     body = [(name, REDACTED) for name, _ in finding.request_fields]
-    in_body = finding.method == "POST" and finding.parameter in {name for name, _ in body}
-    if in_body:
-        body = [(name, finding.proof_payload if name == finding.parameter else value)
-                for name, value in body]
-    else:
-        query = [(name, finding.proof_payload if name == finding.parameter else value)
-                 for name, value in query]
-        if finding.parameter and finding.parameter not in {name for name, _ in query}:
-            query.append((finding.parameter, finding.proof_payload))
+    query, body = _substitute_proof(finding, query, body)
     safe_url = urlunsplit((url.scheme, url.netloc, url.path or "/", urlencode(query), ""))
     return safe_url, urlencode(body) if finding.method == "POST" else None
 
