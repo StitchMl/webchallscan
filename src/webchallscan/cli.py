@@ -84,8 +84,30 @@ def _extension_path() -> Path:
     raise ValueError("bundled browser extension directory was not found")
 
 
+def _normalize_command(argv: list[str]) -> list[str]:
+    """Translate optional command-style syntax to the legacy argparse flags.
+
+    Keeping one parser and one execution path prevents divergence between the
+    original flags and the new ergonomic command aliases.
+    """
+    if not argv:
+        return argv
+    command, *rest = argv
+    if command == "scan":
+        return rest
+    if command == "observe":
+        return rest if "--observe-network" in rest else [
+            "--observe-network", "20", *rest,
+        ]
+    if command == "contract":
+        return ["--validate-api-contract", *rest]
+    if command == "replay":
+        return rest if "--burp-procedure" in rest else ["--burp-procedure", *rest]
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
     if args.extension_path:
         try:
             print(_extension_path())
