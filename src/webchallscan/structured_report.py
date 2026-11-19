@@ -98,7 +98,8 @@ def render_structured_text(result: dict, color: str = "auto",
     if checks:
         lines_for("REVIEW TASKS", checks,
                   lambda e: f"{safe(e.get('method')):7} {safe(e.get('path'))}  "
-                            f"checks={len(limited(e.get('checks')))}"
+                            f"checks={len(limited(e.get('checks')))}  "
+                            f"json-fields={len(limited(e.get('json_field_paths')))}"
                             if isinstance(e, dict) else "")
     triage = limited(result.get("triage"))
     if triage:

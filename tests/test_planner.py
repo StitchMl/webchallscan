@@ -63,3 +63,32 @@ def test_get_inventory_urls_rejects_origin_mismatch_and_unsafe_paths():
     assert inventory_get_urls(data, "https://ctf.example/") == (
         "https://ctf.example/search?q=WCSBASE",
     )
+
+
+def test_plan_carries_only_safe_json_field_paths_without_any_active_replay():
+    data = inventory()
+    data["endpoints"][0]["json_fields"] = [["input"], ["profile", "name"]]
+    plan = plan_inventory(data, "https://ctf.example")
+    post = next(item for item in plan["checks"] if item["method"] == "POST")
+    assert post["json_field_paths"] == [["input"], ["profile", "name"]]
+    assert "manual-json-body-field-review" in post["checks"]
+    assert post["active_test_status"] == "not-executed"
+    assert plan["active_tests_executed"] == 0
+    assert "json_field_paths" in post
+    assert "json-body-field-review" not in plan["checks"][1]["checks"]
+
+
+@pytest.mark.parametrize("bad_fields", [
+    "raw",
+    [["password"]],
+    [["nested", "csrf_token"]],
+    [["unsafe=key"]],
+    [[], ["input"]],
+    [["a"] * 6],
+    [["ok"]] * 13,
+])
+def test_plan_rejects_malformed_or_sensitive_json_fields(bad_fields):
+    data = inventory()
+    data["endpoints"][0]["json_fields"] = bad_fields
+    with pytest.raises(ValueError):
+        plan_inventory(data)
