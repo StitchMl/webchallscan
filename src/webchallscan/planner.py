@@ -6,8 +6,9 @@ require additional authorized context.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
 def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
@@ -74,3 +75,39 @@ def load_inventory(path: str) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("inventory must be a JSON object")
     return raw
+
+
+def inventory_get_urls(data: dict, target: str, limit: int = 20) -> tuple[str, ...]:
+    """Build safe GET discovery seeds from an existing redacted inventory.
+
+    This never reconstructs captured parameter values or replays methods
+    other than GET. The scanner still enforces its own page/request budgets.
+    """
+    parsed = urlsplit(target)
+    if (parsed.scheme not in {"http", "https"} or not parsed.netloc
+            or parsed.username or parsed.password):
+        raise ValueError("target must be an absolute HTTP(S) URL")
+    expected = f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+    plan_inventory(data, expected)
+    if not 1 <= limit <= 100:
+        raise ValueError("inventory route limit must be 1-100")
+    routes: set[str] = set()
+    for entry in data["endpoints"]:
+        if entry["method"] != "GET":
+            continue
+        path = entry["path"]
+        # Avoid reconstructing paths with traversal, encodings or controls.
+        if (not path.startswith("/") or path.startswith("//")
+                or "%" in path or ".." in path
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in path)):
+            continue
+        params = entry["parameters"]
+        if len(params) > 12 or any(
+            not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,59}", name)
+            for name in params
+        ):
+            continue
+        query = urlencode([(name, "WCSBASE") for name in sorted(set(params))])
+        routes.add(urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(),
+                              path, query, "")))
+    return tuple(sorted(routes)[:limit])
