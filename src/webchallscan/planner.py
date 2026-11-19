@@ -50,6 +50,31 @@ def _review_categories(method: str, path: str, params: list[str],
     return categories
 
 
+def _plan_endpoint(entry: object) -> dict:
+    """Validate and summarize one endpoint without generating any request."""
+    if not isinstance(entry, dict):
+        raise ValueError("invalid endpoint entry")
+    method, path = entry.get("method"), entry.get("path")
+    if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} or not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path or "\\" in path:
+        raise ValueError("unsafe or invalid inventory path")
+    params = entry.get("parameters")
+    if not isinstance(params, list) or any(not isinstance(p, str) for p in params):
+        raise ValueError("invalid parameter names")
+    resource_type = entry.get("type", "Other")
+    # Retain *names only* from the already-redacted inventory.
+    # Untrusted inventory files cannot inject raw JSON values into plans.
+    fields = _safe_json_field_paths(entry.get("json_fields", []))
+    categories = _review_categories(method, path, params, fields)
+    return {
+        "method": method, "path": path, "resource_type": str(resource_type)[:30],
+        "parameter_names": sorted(set(params)),
+        "json_field_paths": sorted(fields) if method == "POST" else [],
+        "checks": categories,
+        "active_test_status": "not-executed",
+        "reason": "Redacted inventory has no replayable request bodies, tokens, or baseline."
+    })
+
+
 def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
     if data.get("schema") != "webchallscan/network-inventory-v1":
         raise ValueError("unsupported inventory schema")
@@ -66,27 +91,7 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
         raise ValueError("invalid inventory endpoints")
     checks = []
     for entry in endpoints:
-        if not isinstance(entry, dict):
-            raise ValueError("invalid endpoint entry")
-        method, path = entry.get("method"), entry.get("path")
-        if method not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"} or not isinstance(path, str) or not path.startswith("/") or path.startswith("//") or "?" in path or "#" in path or "\\" in path:
-            raise ValueError("unsafe or invalid inventory path")
-        params = entry.get("parameters")
-        if not isinstance(params, list) or any(not isinstance(p, str) for p in params):
-            raise ValueError("invalid parameter names")
-        resource_type = entry.get("type", "Other")
-        # Retain *names only* from the already-redacted inventory.
-        # Untrusted inventory files cannot inject raw JSON values into plans.
-        fields = _safe_json_field_paths(entry.get("json_fields", []))
-        categories = _review_categories(method, path, params, fields)
-        checks.append({
-            "method": method, "path": path, "resource_type": str(resource_type)[:30],
-            "parameter_names": sorted(set(params)),
-            "json_field_paths": sorted(fields) if method == "POST" else [],
-            "checks": categories,
-            "active_test_status": "not-executed",
-            "reason": "Redacted inventory has no replayable request bodies, tokens, or baseline."
-        })
+        checks.append(_plan_endpoint(entry))
     checks.sort(key=lambda e: (e["path"], e["method"], e["parameter_names"]))
     return {
         "schema": "webchallscan/audit-plan-v1",
