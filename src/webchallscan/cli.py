@@ -12,6 +12,7 @@ from . import __version__
 from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
+from .jwt_audit import audit_jwt_file
 from .network import observe_cdp
 from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
@@ -46,6 +47,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
     p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
     p.add_argument("--import-burp", metavar="XML", help="offline redacted inventory from a Burp Suite XML HTTP history export")
+    p.add_argument("--audit-jwt-file", metavar="FILE", help="offline JWT structure and metadata audit without printing token values")
     p.add_argument("--from-inventory", metavar="JSON", help="seed scan with same-origin GET routes from redacted inventory")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
@@ -89,14 +91,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.validate_api_contract or args.check_api_cases or args.import_burp):
+                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
+    if args.audit_jwt_file is not None:
+        if (args.url or args.active or args.cdp or args.browser_session
+                or args.session_file or args.listen_session or args.quick
+                or args.observe_network is not None or args.plan_inventory
+                or args.validate_api_contract or args.check_api_cases
+                or args.import_burp or args.from_inventory
+                or args.burp_procedure or args.burp_raw or args.include_session_secrets
+                or args.expect_origin):
+            print("error: --audit-jwt-file is an exclusive offline mode", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(audit_jwt_file(args.audit_jwt_file), indent=2))
+            return 0
+        except (ValueError, OSError, UnicodeError):
+            print("error: JWT audit failed: invalid input file or token", file=sys.stderr)
+            return 2
     if args.import_burp is not None:
         if (not args.authorized or args.url or args.active or args.cdp or args.browser_session
                 or args.session_file or args.listen_session or args.quick
                 or args.observe_network is not None or args.plan_inventory
                 or args.validate_api_contract or args.check_api_cases or args.from_inventory
+                or args.audit_jwt_file
                 or args.include_session_secrets or args.burp_procedure or args.burp_raw):
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
             return 2
