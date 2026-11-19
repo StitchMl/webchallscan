@@ -12,7 +12,7 @@ def test_scan_alias_uses_existing_scanner(monkeypatch, capsys):
     monkeypatch.setattr(cli, "scan_profiles", fake_scan)
     assert cli.main(["scan", "http://127.0.0.1/", "--authorized"]) == 0
     assert seen["url"] == "http://127.0.0.1/"
-    assert "webchallscan" in capsys.readouterr().out
+    assert "WEBCHALLSCAN" in capsys.readouterr().out
 
 
 def test_observe_alias_uses_default_window(monkeypatch, capsys):
