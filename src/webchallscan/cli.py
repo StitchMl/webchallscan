@@ -126,7 +126,7 @@ def _normalize_command(argv: list[str]) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
     if args.human and args.format != "text":
-        print("error: --human requires --format text", file=sys.stderr)
+        print("error: --human and --format json/markdown are mutually exclusive; use --format text", file=sys.stderr)
         return 2
     if args.format == "markdown" and (
             args.quick or args.observe_network is not None or args.plan_inventory
