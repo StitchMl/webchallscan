@@ -530,6 +530,40 @@ class Scanner:
                     expected_evidence=f"unencoded {XSS_PROBE} absent from baseline")
         return None
 
+    def _source_map_hints(self, response: Response) -> list[Finding]:
+        """Record same-origin JavaScript source-map references without fetching them."""
+        if response.status != 200:
+            return []
+        # Source maps are annotations, not proof that the map is accessible.
+        # Keep the map URL out of reports because it could carry query secrets.
+        hints = re.findall(
+            r"(?://[#@]\\s*sourceMappingURL\\s*=\\s*([^\\s*]+)|/\\*#\\s*sourceMappingURL\\s*=\\s*([^*\\s]+))",
+            response.text,
+            re.I,
+        )
+        for line_hint, block_hint in hints:
+            candidate = line_hint or block_hint
+            if not candidate or candidate.startswith(("data:", "//", "\\\\")):
+                continue
+            try:
+                url = urljoin(response.url, candidate)
+                parsed = urlsplit(url)
+                if (parsed.scheme not in {"http", "https"} or not self._in_scope(url)
+                        or parsed.username or parsed.password):
+                    continue
+            except ValueError:
+                continue
+            return [self._finding(
+                rule="WEB-SOURCEMAP-HINT-001",
+                title="JavaScript source-map annotation observed",
+                severity="info", confidence="medium", url=response.url,
+                evidence="A JavaScript sourceMappingURL references a same-origin map; "
+                         "availability and source disclosure have not been tested.",
+                vector=f"Review the sourceMappingURL annotation in GET {redact_url(response.url)}.",
+                patch="Do not publish sensitive source maps or embedded credentials in production assets.",
+            )]
+        return []
+
     @staticmethod
     def _static_get_routes(source: str) -> list[str]:
         """Find literal GET routes in scripts without evaluating JavaScript.
@@ -599,6 +633,7 @@ class Scanner:
                         js = self._request(script_url)
                         if len(js.text) <= MAX_BODY and js.status == 200:
                             routes.extend(self._static_get_routes(js.text))
+                            report.findings.extend(self._source_map_hints(js))
                     except (URLError, OSError, RuntimeError, ValueError):
                         continue
             discovered_routes += len(routes)
