@@ -91,7 +91,8 @@ def render_structured_text(result: dict, color: str = "auto",
     if endpoints:
         lines_for("ENDPOINTS", endpoints,
                   lambda e: f"{safe(e.get('method')):7} {safe(e.get('path'))}  "
-                            f"params={len(limited(e.get('parameters')))}"
+                            f"params={len(limited(e.get('parameters')))}  "
+                            f"json-fields={len(limited(e.get('json_fields')))}"
                             if isinstance(e, dict) else "")
     checks = limited(result.get("checks"))
     if checks:
