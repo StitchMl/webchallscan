@@ -94,6 +94,15 @@ webchallscan --audit-jwt-file jwt.txt --human
 schemas. Leave it out when using `> results.json`. It cannot be combined
 with `--format json`; `--color never` disables all ANSI escapes.
 
+### CDP transport safety
+
+The local CDP WebSocket reader now rejects frames larger than **2 MB**
+before reading their payload. It also validates frame type, control-frame
+sizes and JSON object responses. This protects the bounded observer and
+browser-session capture against malformed data on a local debugging port.
+CDP uses complete JSON text frames; binary and fragmented frames are
+unsupported. No scanning request limits or target behavior change.
+
 ### Current browser session
 
 For a normally opened Chrome or Edge window, load the bundled unpacked
