@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
-from .http_client import NoRedirect, read_bounded
+from .http_client import NoRedirect, api_handlers, read_bounded
 
 
 ALLOWED_HEADERS = {"authorization", "cookie", "x-api-key"}
@@ -23,9 +23,7 @@ PROBES = ("", "WCS_TEST_0123", "0", "-1", "a" * 64)
 
 def _fetch(url, headers, timeout, *, verify_tls=True):
     request = Request(url, method="GET", headers={**headers, "Accept": "application/json"})
-    handlers = [NoRedirect]
-    if not verify_tls:
-        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
+    handlers = api_handlers(verify_tls=verify_tls)
     response = read_bounded(build_opener(*handlers), request, timeout, 65537)
     raw, status = response.body, response.status
     if len(raw) > 65536:
