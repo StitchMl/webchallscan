@@ -12,6 +12,9 @@ license = {text = "MIT"}
 authors = [{name = "StitchMl"}]
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
 [project.scripts]
 webchallscan = "webchallscan.cli:main"
 
