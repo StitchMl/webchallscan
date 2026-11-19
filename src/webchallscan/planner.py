@@ -47,6 +47,11 @@ def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
                 raise ValueError("invalid nested JSON field hints")
             if not all(isinstance(name, str)
                        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", name)
+                       and not re.search(
+                           r"password|passwd|secret|token|csrf|xsrf|auth|cookie|"
+                           r"session|key|bearer|credential|otp|nonce|signature|private",
+                           name, re.I,
+                       )
                        for name in names):
                 raise ValueError("unsafe JSON field name")
             fields.append(names)
