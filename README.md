@@ -128,6 +128,25 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Scan observed GET endpoints (opt-in)
+
+An inventory produced by `--observe-network` or `--import-burp` can seed
+an otherwise linkless SPA/API scanner. The origin of the explicit scan URL
+must match the inventory exactly:
+
+```powershell
+webchallscan https://challenge.example/ --authorized --from-inventory .\\inventory.json --max-pages 20 --max-requests 80
+webchallscan https://challenge.example/ --authorized --from-inventory .\\inventory.json --active --max-requests 80
+```
+
+Only same-origin **GET** paths are used (up to 20 discovery seeds).
+Query values are never replayed; their parameter names receive a harmless
+fixed placeholder (`WCSBASE`). Captured POST/PUT/PATCH/DELETE requests
+are never replayed. Existing request/page budgets and session policies
+remain in effect. This is explicit opt-in network scanning, unlike the
+zero-request `--plan-inventory` mode. Inspect state-changing GET endpoints
+before using it on any environment.
+
 ### Quick CTF workflow (no JSON setup)
 
 With a dedicated Chrome CDP window on the intended lab tab, run:
