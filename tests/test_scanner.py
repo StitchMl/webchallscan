@@ -585,7 +585,7 @@ def test_passive_jwt_discovery_from_response_and_cookies_redacts_values(server):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
     jwt = (encode({"alg": "none"}) + "." +
            encode({"sub": "private@example.com", "role": "ADMINSECRET"}) +
-           ".signature")
+           ".SIG_PRIVATE_7253")
     scanner = Scanner(server + "/jwt?secret=PRIVATE")
     scanner.cookies = [SimpleNamespace(value=jwt)]
     response = Response(server + "/jwt?secret=PRIVATE", 200,
@@ -599,7 +599,7 @@ def test_passive_jwt_discovery_from_response_and_cookies_redacts_values(server):
     assert "JWT-ALG-NONE" in finding.evidence
     assert "cookie" in finding.evidence and "response" in finding.evidence
     public = repr(finding.to_dict())
-    for secret in (jwt, "private@example.com", "ADMINSECRET", "PRIVATE", "signature"):
+    for secret in (jwt, "private@example.com", "ADMINSECRET", "PRIVATE", "SIG_PRIVATE_7253"):
         assert secret not in public
     assert finding.to_dict()["replay"]["cookie_names"] == []
     assert scanner.requests_sent == 0
