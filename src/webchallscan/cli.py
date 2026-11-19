@@ -22,6 +22,7 @@ from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
 from .snippets import render_snippets
+from .structured_report import render_structured_text
 from .session import (
     BrowserSession,
     SessionCaptureError,
@@ -78,6 +79,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=("text", "json"), default="text")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto", help="terminal colors: auto, always or never")
     p.add_argument("--verbose", action="store_true", help="show full finding vectors, replay and recovery details in text reports")
+    p.add_argument("--human", action="store_true", help="human-readable colored view of inventories and API/offline JSON reports (opt-in)")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--extension-path", action="store_true", help="print the bundled Chromium extension directory and exit")
     return p
@@ -119,6 +121,15 @@ def _normalize_command(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
+    if args.human and args.format == "json":
+        print("error: --human and --format json are mutually exclusive", file=sys.stderr)
+        return 2
+
+    def _format_result(result: dict, indent: int = 2) -> str:
+        if args.human:
+            return render_structured_text(result, args.color, verbose=args.verbose)
+        return json.dumps(result, indent=indent)
+
     if args.nosql_query and (
             not args.active or args.quick or args.validate_api_contract or
             args.check_api_cases or args.check_json_cases or args.import_burp or
@@ -149,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --audit-session-file is an exclusive offline mode", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(audit_session_file(args.audit_session_file), indent=2))
+            print(_format_result(audit_session_file(args.audit_session_file), indent=2))
             return 0
         except (ValueError, OSError, UnicodeError):
             print("error: session-format audit failed: invalid input file", file=sys.stderr)
@@ -170,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             result = export_burp_session(
                 args.burp_session_from, args.burp_session_out, args.expect_origin)
             print("warning: new session file contains live cookies; restrict access and delete it after use", file=sys.stderr)
-            print(json.dumps(result, indent=2))
+            print(_format_result(result, indent=2))
             return 0
         except (ValueError, OSError, UnicodeError):
             print("error: Burp session export failed; check origin, source and output path", file=sys.stderr)
@@ -190,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --audit-jwt-file is an exclusive offline mode", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(audit_jwt_file(args.audit_jwt_file), indent=2))
+            print(_format_result(audit_jwt_file(args.audit_jwt_file), indent=2))
             return 0
         except (ValueError, OSError, UnicodeError):
             print("error: JWT audit failed: invalid input file or token", file=sys.stderr)
@@ -206,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(import_burp_xml(args.import_burp, args.expect_origin), indent=2))
+            print(_format_result(import_burp_xml(args.import_burp, args.expect_origin), indent=2))
             return 0
         except (ValueError, OSError) as exc:
             print(f"error: Burp XML import failed: {exc}", file=sys.stderr)
@@ -223,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --check-json-cases requires --authorized --active and excludes other scan modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(run_json_cases(
+            print(_format_result(run_json_cases(
                 load_json_cases(args.check_json_cases), timeout=args.timeout,
                 verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
@@ -238,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Quick discovery running: use the selected lab tab now...", file=sys.stderr, flush=True)
             observed = observe_cdp(args.cdp, 20.0, args.observe_limit)
             plan = plan_inventory(observed)
-            print(json.dumps({
+            print(_format_result({
                 "schema": "webchallscan/quick-v1",
                 "origin": observed["origin"],
                 "observed_requests": observed["observed_requests"],
@@ -259,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
+            print(_format_result(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError):
             print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
@@ -269,7 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --check-api-cases requires --authorized and excludes browser/scan modes", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
+            print(_format_result(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
             return 0
         except (ValueError, OSError, URLError, json.JSONDecodeError) as exc:
             print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)
@@ -279,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --plan-inventory requires --authorized and cannot be combined with a browser source", file=sys.stderr)
             return 2
         try:
-            print(json.dumps(plan_inventory(load_inventory(args.plan_inventory), args.expect_origin), indent=2))
+            print(_format_result(plan_inventory(load_inventory(args.plan_inventory), args.expect_origin), indent=2))
             return 0
         except (ValueError, OSError, json.JSONDecodeError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -296,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         try:
             print("Observing focused tab: interact with it now...", file=sys.stderr, flush=True)
-            print(json.dumps(observe_cdp(args.cdp, args.observe_network, args.observe_limit), indent=2))
+            print(_format_result(observe_cdp(args.cdp, args.observe_network, args.observe_limit), indent=2))
             return 0
         except (ValueError, OSError) as exc:
             print(f"error: {exc}", file=sys.stderr)
