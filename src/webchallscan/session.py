@@ -10,6 +10,7 @@ import re
 import secrets
 import socket
 import ssl
+import stat
 import struct
 import sys
 import time
@@ -326,12 +327,35 @@ def _safe_headers(value: object) -> tuple[tuple[str, str], ...]:
 
 
 def load_session_file(path: str) -> BrowserSession:
-    file = Path(path)
+    # Explicitly selected local JSON only, scoped to the working directory.
+    # Limit bytes read and reject symlinks/non-regular files.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
-        if file.stat().st_size > 2_000_000:
+        workspace = Path.cwd().resolve()
+        supplied = Path(path)
+        # Restrict CLI-controlled paths to one validated filename in cwd.
+        # No parent components or traversal syntax can reach the open call.
+        try:
+            relative = supplied.relative_to(workspace) if supplied.is_absolute() else supplied
+        except ValueError as exc:
+            raise SessionCaptureError("session file must be inside the working directory") from exc
+        filename = relative.name
+        if (len(relative.parts) != 1 or not isinstance(filename, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\.json", filename)
+                or ".." in filename):
+            raise SessionCaptureError("session file must be a simple JSON filename in the working directory")
+        file = workspace / filename
+        if file.is_symlink() or not file.is_file():
+            raise SessionCaptureError("session input must be a regular file")
+        fd = os.open(file, flags)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise SessionCaptureError("session input must be a regular file")
+            raw = stream.read(2_000_001)
+        if len(raw) > 2_000_000:
             raise SessionCaptureError("session file exceeds 2 MB")
-        data = json.loads(file.read_text(encoding="utf-8"))  # NOSONAR: reads a local session file the user passes on the CLI
-    except (OSError, json.JSONDecodeError) as exc:
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SessionCaptureError("cannot read a valid session JSON file") from exc
     if isinstance(data, dict) and data.get("schema") == "webchallscan/browser-session-v1":
         return parse_extension_session(data, "session-file")
