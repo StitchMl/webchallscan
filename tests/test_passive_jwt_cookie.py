@@ -64,7 +64,8 @@ def test_scanner_inherits_cookie_jwt_posture_without_extra_requests():
     assert token not in repr([finding.to_dict() for finding in findings])
 
 
-def test_burp_history_jwt_cookie_hints_are_zero_request_and_redacted(tmp_path):
+def test_burp_history_jwt_cookie_hints_are_zero_request_and_redacted(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     token = jwt({"alg": "none"}, {"role": "SUPERSECRET"})
     raw = (
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
