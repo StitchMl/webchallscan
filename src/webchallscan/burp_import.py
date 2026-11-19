@@ -122,7 +122,8 @@ def _csrf_request_sources(item: ET.Element, method: str) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
-def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
+def read_bounded_burp_xml(path: str) -> bytes:
+    """Read only a bounded regular XML file inside the current work tree."""
     # The export path is operator-controlled, not a URL or a remote fetch.
     # Restrict agent-supplied paths to the working tree and read a regular
     # file with a hard cap (not stat() followed by an unbounded read).
@@ -144,6 +145,11 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
         raise ValueError("cannot read Burp XML export") from exc
     if len(raw) > MAX_XML:
         raise ValueError("Burp XML export exceeds the 5 MB limit")
+    return raw
+
+
+def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
+    raw = read_bounded_burp_xml(path)
     # Refuse DTDs/entities instead of processing potentially hostile exports.
     if b"<!doctype" in raw.lower() or b"<!entity" in raw.lower():
         raise ValueError("DTD and XML entities are not supported")
