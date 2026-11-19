@@ -256,7 +256,8 @@ class Scanner:
             (name, value) for name, value in headers.items()
             if name.lower() in {"user-agent", "accept-language", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}
         )))
-        kwargs.setdefault("session_cookies", tuple(sorted((cookie.name, cookie.value) for cookie in self.cookies)))
+        if "session_cookies" not in kwargs:
+            kwargs["session_cookies"] = tuple(sorted((cookie.name, cookie.value) for cookie in self.cookies))
         return Finding(**kwargs)  # type: ignore[arg-type]
 
     @staticmethod
