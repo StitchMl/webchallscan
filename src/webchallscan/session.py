@@ -332,9 +332,15 @@ def load_session_file(path: str) -> BrowserSession:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         candidate = Path(path)
+        # The explicit session import is confined to the invoking workspace.
+        # An LLM-supplied CLI argument must not access other local secrets.
         if candidate.is_symlink():
             raise SessionCaptureError("session input must be a regular file")
         file = candidate.resolve(strict=True)
+        try:
+            file.relative_to(Path.cwd().resolve())
+        except ValueError as exc:
+            raise SessionCaptureError("session file must be inside the working directory") from exc
         if not file.is_file():
             raise SessionCaptureError("session input must be a regular file")
         fd = os.open(file, flags)
