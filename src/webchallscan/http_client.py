@@ -52,12 +52,18 @@ def validate_loopback_proxy(proxy: str | None) -> str | None:
     return proxy
 
 
+def tls_context(verify_tls: bool = True) -> ssl.SSLContext:
+    """Return a verifying TLS context; only an explicit --insecure opt-out disables checks."""
+    if verify_tls:
+        return ssl.create_default_context()
+    return ssl._create_unverified_context()
+
+
 def scanner_handlers(origin: tuple[str, str], cookies: CookieJar,
                      *, verify_tls: bool, proxy: str | None = None) -> list:
     """Retain explicit verified SSL context, cookie jar and origin-only redirects."""
     proxy = validate_loopback_proxy(proxy)
-    context = (ssl.create_default_context() if verify_tls
-               else ssl._create_unverified_context())  # NOSONAR: caller explicitly opts out of verification
+    context = tls_context(verify_tls)
     handlers = []
     if proxy:
         handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
@@ -76,7 +82,7 @@ def api_handlers(*, verify_tls: bool = True, proxy: str | None = None) -> list:
     if proxy:
         handlers.append(ProxyHandler({"http": proxy, "https": proxy}))
     if not verify_tls:
-        handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit opt-in
+        handlers.append(HTTPSHandler(context=tls_context(False)))
     return handlers
 
 

@@ -175,6 +175,26 @@ def _nosql_finding(samples: list[dict], number: int) -> dict | None:
     return None
 
 
+def _run_case(client, origin: str, case: tuple, number: int, timeout: float,
+              sent: int) -> tuple[dict, int, dict | None]:
+    path, kind, body, field, headers = case
+    probes = (
+        ["WCSBASE", PROBE_SSTI, PROBE_SSTI]
+        if kind == "ssti" else
+        ["WCSBASE", "WCSBASE", PROBE_NOSQL, PROBE_NOSQL]
+    )
+    if sent + len(probes) > MAX_REQUESTS:
+        raise ValueError("JSON request budget exceeded")
+    samples = _collect_samples(client, origin, path, body, field, headers, timeout, probes)
+    finding = (_ssti_finding if kind == "ssti" else _nosql_finding)(samples, number)
+    outcome = "inconclusive"
+    if finding:
+        outcome = "arithmetic-observed" if kind == "ssti" else "differential-review"
+    return ({"case": number, "path": path, "kind": kind,
+             "field_names": field, "requests_sent": len(probes),
+             "outcome": outcome}, len(samples), finding)
+
+
 def run_json_cases(data: dict, *, timeout: float = 5.0,
                    verify_tls: bool = True, proxy: str | None = None, send=None) -> dict:
     from .http_client import validate_loopback_proxy
@@ -194,24 +214,12 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
     outcomes = []
     client = send or (lambda url, body, headers, timeout: _send_json(
         url, body, headers, timeout, verify_tls=verify_tls, proxy=proxy))
-    for number, (path, kind, body, field, headers) in enumerate(prepared, 1):
-        probes = (
-            ["WCSBASE", PROBE_SSTI, PROBE_SSTI]
-            if kind == "ssti" else
-            ["WCSBASE", "WCSBASE", PROBE_NOSQL, PROBE_NOSQL]
-        )
-        if sent + len(probes) > MAX_REQUESTS:
-            raise ValueError("JSON request budget exceeded")
-        samples = _collect_samples(client, origin, path, body, field, headers, timeout, probes)
-        sent += len(samples)
-        finding = (_ssti_finding if kind == "ssti" else _nosql_finding)(samples, number)
-        outcome = "inconclusive"
+    for number, case in enumerate(prepared, 1):
+        outcome, sent_now, finding = _run_case(client, origin, case, number, timeout, sent)
+        sent += sent_now
         if finding:
-            outcome = "arithmetic-observed" if kind == "ssti" else "differential-review"
             findings.append(finding)
-        outcomes.append({"case": number, "path": path, "kind": kind,
-                         "field_names": field, "requests_sent": len(probes),
-                         "outcome": outcome})
+        outcomes.append(outcome)
     return {
         "schema": "webchallscan/json-results-v1", "origin": origin,
         "requests_sent": sent, "active_tests_executed": sent,
