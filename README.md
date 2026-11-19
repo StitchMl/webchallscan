@@ -137,6 +137,15 @@ browser-session capture against malformed data on a local debugging port.
 CDP uses complete JSON text frames; binary and fragmented frames are
 unsupported. No scanning request limits or target behavior change.
 
+### Bounded local session-file loader
+
+The explicit `--session-file` loader reads at most 2 MB plus one byte
+from a regular local file. It refuses symlinks (where supported) and
+directories before decoding private cookies, preventing unbounded reads
+if an input changes between metadata inspection and opening. Deliberately
+selected regular session files outside the current working directory
+remain supported; no session values are printed in errors.
+
 ### Session cookie input safety
 
 Session-file and browser-extension cookies now share strict validation of
