@@ -791,6 +791,34 @@ class Scanner:
             source, re.I,
         ):
             routes.add((method.upper(), path))
+        # Accept both key orders in bounded, flat axios/jQuery config objects.
+        # Only annotate methods; these hints never become active requests.
+        configs = re.findall(
+            r"""(?:\baxios(?:\.request)?|\$\.ajax)\s*\(\s*\{([^{}]{1,320})\}""",
+            source, re.I,
+        )
+        for options in configs[:100]:
+            method = re.search(
+                r"""(?:^|,)\s*(?:method|type)\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
+                options, re.I,
+            )
+            url = re.search(
+                r"""(?:^|,)\s*url\s*:\s*['"]([^'"]{1,256})['"]\s*(?=,|$)""",
+                options, re.I,
+            )
+            if method and url:
+                routes.add((method.group(1).upper(), url.group(1)))
+        # fetch() may include flat options before its method declaration.
+        for path, options in re.findall(
+            r"""\bfetch\s*\(\s*['"]([^'"]{1,256})['"]\s*,\s*\{([^{}]{1,320})\}""",
+            source, re.I,
+        )[:100]:
+            method = re.search(
+                r"""(?:^|,)\s*method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
+                options, re.I,
+            )
+            if method:
+                routes.add((method.group(1).upper(), path))
         for path in re.findall(
             r"""['"](/(?:api|v[1-9][0-9]*|admin|internal)/[^'"\s]{0,160})['"]""",
             source, re.I,
