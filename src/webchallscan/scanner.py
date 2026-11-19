@@ -572,6 +572,38 @@ class Scanner:
             keywords.update(_comment_keywords(comment))
         return [self._comment_hint_finding(response, keywords)] if keywords else []
 
+    def _metadata_findings(self, response: Response, method: str) -> list[Finding]:
+        """Summarize metadata headers without disclosing server banner values."""
+        items = []
+        allowed = response.headers.get("allow", "")
+        if allowed:
+            standard = {"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH",
+                        "DELETE", "TRACE", "CONNECT"}
+            names = sorted(set(allowed.upper().replace(" ", "").split(",")) & standard)
+            if names:
+                items.append(self._finding(
+                    rule="WEB-HTTP-ALLOW-001",
+                    title="HTTP methods advertised by server",
+                    severity="info", confidence="high", url=response.url,
+                    method=method,
+                    evidence="Allow header advertises methods: " + ", ".join(names) +
+                             "; availability does not imply authorization.",
+                    vector=f"Inspect {method} response headers for {redact_url(response.url)}.",
+                    patch="Restrict HTTP methods to those required by the application.",
+                ))
+        banners = [name for name in ("server", "x-powered-by")
+                   if name in response.headers]
+        if banners:
+            items.append(self._finding(
+                rule="WEB-TECH-BANNER-001", title="Technology banner header present",
+                severity="info", confidence="medium", url=response.url, method=method,
+                evidence="Technology banner header names: " + ", ".join(banners) +
+                         "; header values are omitted.",
+                vector=f"Inspect {method} response headers for {redact_url(response.url)}.",
+                patch="Avoid exposing unnecessary technology and version details.",
+            ))
+        return items
+
     def _source_map_hints(self, response: Response) -> list[Finding]:
         """Record same-origin JavaScript source-map references without fetching them."""
         if response.status != 200:
@@ -615,7 +647,11 @@ class Scanner:
         """
         patterns = (
             r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*\)""",
+            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*method\s*:\s*['"]GET['"]\s*\}\s*\)""",
             r"""\baxios\.get\s*\(\s*['"]([^'"]+)['"]""",
+            r"""\$\.(?:get|getJSON)\s*\(\s*['"]([^'"]+)['"]""",
+            r"""\$\.ajax\s*\(\s*\{\s*url\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:method|type)\s*:\s*['"]GET['"]""",
+            r"""\baxios\s*\(\s*\{\s*method\s*:\s*['"]GET['"]\s*,\s*url\s*:\s*['"]([^'"]+)['"]""",
             r"""\b(?:window\.)?open\s*\(\s*['"]GET['"]\s*,\s*['"]([^'"]+)['"]""",
         )
         routes: set[str] = set()
@@ -641,6 +677,7 @@ class Scanner:
             try:
                 metadata = self._request(self.target, method)
                 report.findings.extend(self._posture_findings(metadata, method))
+                report.findings.extend(self._metadata_findings(metadata, method))
             except (URLError, OSError, RuntimeError, ValueError):
                 report.errors.append(f"{method} metadata request failed")
         while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
