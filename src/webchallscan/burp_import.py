@@ -129,6 +129,8 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
                 posture[key] = signal
     if origin is None:
         raise ValueError("no valid HTTP(S) origin found in Burp XML")
+    if expected_origin is not None and not observations:
+        raise ValueError("no matching items for the expected origin")
     endpoints = sorted(observations.values(), key=lambda x: (
         x["path"], x["method"], x["parameters"],
     ))
