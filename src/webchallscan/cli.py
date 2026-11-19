@@ -55,6 +55,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--max-requests", type=int, default=80)
     p.add_argument("--timeout", type=float, default=5.0)
     p.add_argument("--insecure", action="store_true", help="disable TLS certificate verification")
+    p.add_argument("--proxy", metavar="HTTP_URL", help="route scan requests through a local Burp HTTP proxy")
     p.add_argument("--format", choices=("text", "json"), default="text")
     p.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -83,6 +84,10 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+    if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
+                       args.validate_api_contract or args.check_api_cases):
+        print("error: --proxy is supported only in scanner mode", file=sys.stderr)
+        return 2
     if args.quick:
         if not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
             print("error: --quick requires --authorized --cdp and no other scan mode", file=sys.stderr)
@@ -199,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         report = scan_profiles(target, profiles=profiles, active=args.active,
                                max_pages=args.max_pages, max_requests=args.max_requests,
                                timeout=args.timeout, verify_tls=not args.insecure,
-                               sessions=sessions)
+                               sessions=sessions, proxy=args.proxy)
         if args.burp_procedure:
             if args.include_session_secrets:
                 print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
