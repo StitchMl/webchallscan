@@ -91,6 +91,7 @@ def test_json_rejects_missing_nested_field_and_invalid_header():
 
 
 def test_json_cli_requires_explicit_authorization_and_active(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
     f = tmp_path / "json-cases.json"
     f.write_text(json.dumps(data()))
     assert cli.main(["--check-json-cases", str(f), "--authorized"]) == 2

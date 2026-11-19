@@ -43,7 +43,8 @@ def test_malformed_token_is_rejected(raw):
         audit_jwt(raw)
 
 
-def test_file_mode_is_exclusive_offline(tmp_path, capsys):
+def test_file_mode_is_exclusive_offline(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "jwt.txt"
     file.write_text(token({"alg": "none"}, {"sub": "SECRET_VALUE"}))
     assert audit_jwt_file(str(file))["algorithm"] == "none"

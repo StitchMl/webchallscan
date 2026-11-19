@@ -8,13 +8,13 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 import json
-from pathlib import Path
 import re
 import ssl
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
 from .http_client import NoRedirect, api_handlers, read_bounded
+from .safe_files import read_input_file
 
 
 SCHEMA = "webchallscan/json-cases-v1"
@@ -194,10 +194,8 @@ def run_json_cases(data: dict, *, timeout: float = 5.0,
 
 
 def load_json_cases(path: str) -> dict:
-    file = Path(path)
-    if file.stat().st_size > 200_000:
-        raise ValueError("JSON case file is too large")
-    data = json.loads(file.read_text(encoding="utf-8"))
+    raw = read_input_file(path, "JSON case file", 200_000, "JSON case file is too large")
+    data = json.loads(raw.decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError("JSON case file must contain an object")
     return data

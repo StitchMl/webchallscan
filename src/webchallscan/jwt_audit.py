@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import re
-from pathlib import Path
+
+from .safe_files import read_input_file
 
 _ALLOWED_B64URL = re.compile(r"^[A-Za-z0-9_-]+$")
 MAX_TOKEN_BYTES = 16_384
@@ -18,7 +18,7 @@ def _decode_json_part(value: str) -> dict:
     try:
         raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
         decoded = json.loads(raw)
-    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+    except ValueError as exc:
         raise ValueError("invalid JWT JSON section") from exc
     if not isinstance(decoded, dict):
         raise ValueError("JWT header and payload must be objects")
@@ -81,9 +81,7 @@ def audit_jwt(token: str) -> dict:
 
 
 def audit_jwt_file(path: str) -> dict:
-    file = Path(path)
-    if file.stat().st_size > MAX_TOKEN_BYTES:
-        raise ValueError("JWT input file is too large")
+    raw = read_input_file(path, "JWT input file", MAX_TOKEN_BYTES, "JWT input file is too large")
     # Never echo input text or an exception containing token material.
-    token = file.read_text(encoding="utf-8").strip()
+    token = raw.decode("utf-8").strip()
     return audit_jwt(token)
