@@ -171,13 +171,15 @@ class Scanner:
                  timeout: float = 5.0, max_requests: int = 80, verify_tls: bool = True,
                  profile: str = "desktop", session: BrowserSession | None = None,
                  proxy: str | None = None,
-                 inventory_urls: tuple[str, ...] = ()) -> None:
+                 inventory_urls: tuple[str, ...] = (),
+                 ssti_alternates: bool = False) -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
         self.target = self._clean_url(target)
         self.origin = (parsed.scheme.lower(), parsed.netloc.lower())
         self.active = active
+        self.ssti_alternates = ssti_alternates
         self.max_pages = max(1, max_pages)
         self.timeout = max(0.1, timeout)
         self.max_requests = max(1, max_requests)
@@ -513,7 +515,8 @@ class Scanner:
                 expected_evidence=SSTI_RESULT, recovery_payload=recovery,
                 flag_path="Jinja expression syntax was verified; the recovery payload reads common CTF flag paths.",
             )
-        if finding.rule == "WEB-SSTI-001" and SSTI_RESULT not in baseline.text:
+        if (self.ssti_alternates and finding.rule == "WEB-SSTI-001"
+                and SSTI_RESULT not in baseline.text):
             # Repeated arithmetic evaluations only; never infer an RCE payload.
             # Each pair is budget-checked and the target is not probed at all
             # unless the operator explicitly enabled --active.
@@ -809,7 +812,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
                   max_requests: int = 80, verify_tls: bool = True,
                   sessions: dict[str, BrowserSession] | None = None,
                   proxy: str | None = None,
-                  inventory_urls: tuple[str, ...] = ()) -> ScanReport:
+                  inventory_urls: tuple[str, ...] = (),
+                  ssti_alternates: bool = False) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -819,7 +823,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
         scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
                           max_requests=max_requests, verify_tls=verify_tls, profile=profile,
                           session=(sessions or {}).get(profile), proxy=proxy,
-                          inventory_urls=inventory_urls)
+                          inventory_urls=inventory_urls,
+                          ssti_alternates=ssti_alternates)
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
