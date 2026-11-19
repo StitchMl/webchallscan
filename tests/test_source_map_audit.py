@@ -64,7 +64,8 @@ def test_rejects_bad_source_map_structure():
             audit_source_map(data)
 
 
-def test_file_limit_and_invalid_json(tmp_path):
+def test_file_limit_and_invalid_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "asset.js.map"
     file.write_bytes(b" " * 2_000_001)
     with pytest.raises(ValueError, match="2 MB"):
@@ -74,7 +75,8 @@ def test_file_limit_and_invalid_json(tmp_path):
         audit_source_map_file(str(file))
 
 
-def test_cli_source_map_file_default_json_and_opt_in_human(tmp_path, capsys):
+def test_cli_source_map_file_default_json_and_opt_in_human(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
     file = tmp_path / "asset.js.map"
     file.write_text(json.dumps(valid_map()))
     cmd = ["--audit-source-map-file", str(file)]
@@ -90,3 +92,34 @@ def test_cli_source_map_file_default_json_and_opt_in_human(tmp_path, capsys):
     assert "exclusive offline mode" in capsys.readouterr().err
     assert main(cmd + ["--format", "markdown"]) == 2
     assert "only to scanner" in capsys.readouterr().err
+
+
+def test_source_map_rejects_outside_workspace_file_and_symlink(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.js.map"
+    outside.write_text(json.dumps(valid_map()))
+    monkeypatch.chdir(workspace)
+    with pytest.raises(ValueError, match="working directory"):
+        audit_source_map_file(str(outside))
+    with pytest.raises(ValueError, match="working directory"):
+        audit_source_map_file("../outside.js.map")
+    alias = workspace / "alias.js.map"
+    alias.symlink_to(outside)
+    with pytest.raises(ValueError, match="working directory"):
+        audit_source_map_file(str(alias))
+
+
+def test_source_map_only_accepts_regular_map_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    txt = tmp_path / "asset.txt"
+    txt.write_text(json.dumps(valid_map()))
+    with pytest.raises(ValueError, match="extension"):
+        audit_source_map_file(str(txt))
+    directory = tmp_path / "directory.map"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular"):
+        audit_source_map_file(str(directory))
+    valid = tmp_path / "asset.js.map"
+    valid.write_text(json.dumps(valid_map()))
+    assert audit_source_map_file("asset.js.map")["source_count"] == 3
