@@ -18,9 +18,9 @@ from .http_client import NoRedirect, api_handlers, read_bounded
 _NoRedirect = NoRedirect
 
 
-def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verify_tls: bool = True) -> dict:
+def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verify_tls: bool = True, proxy: str | None = None) -> dict:
     req = Request(url, method="GET", headers={**headers, "Accept": "application/json, text/plain, */*"})  # NOSONAR: authorized black-box request to the user-specified target
-    handlers = api_handlers(verify_tls=verify_tls)
+    handlers = api_handlers(verify_tls=verify_tls, proxy=proxy)
     response = read_bounded(build_opener(*handlers), req, timeout, 65537)
     raw, status = response.body, response.status
     typ = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
@@ -30,7 +30,9 @@ def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verif
             "length": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = True) -> dict:
+def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = True, proxy: str | None = None) -> dict:
+    from .http_client import validate_loopback_proxy
+    validate_loopback_proxy(proxy)
     if data.get("schema") != "webchallscan/read-only-cases-v1":
         raise ValueError("invalid case schema")
     origin = data.get("origin")
@@ -59,12 +61,13 @@ def run_readonly_cases(data: dict, timeout: float = 5.0, *, verify_tls: bool = T
                 raise ValueError("role headers must be authorization, cookie or x-api-key only")
             header_sets.append(h)
         url = origin + path
-        if verify_tls:
-            owner = _digest_response(url, header_sets[0], timeout)
-            other = _digest_response(url, header_sets[1], timeout)
-        else:
-            owner = _digest_response(url, header_sets[0], timeout, verify_tls=False)
-            other = _digest_response(url, header_sets[1], timeout, verify_tls=False)
+        kwargs = {}
+        if not verify_tls:
+            kwargs["verify_tls"] = False
+        if proxy is not None:
+            kwargs["proxy"] = proxy
+        owner = _digest_response(url, header_sets[0], timeout, **kwargs)
+        other = _digest_response(url, header_sets[1], timeout, **kwargs)
         # A matching 2xx digest is a review candidate, not an IDOR proof:
         # generic success responses and public resources can match.
         suspected = 200 <= owner["status"] < 300 and 200 <= other["status"] < 300 and (
