@@ -66,6 +66,9 @@ class PageParser(HTMLParser):
         self.scripts: list[str] = []
         self.forms: list[Form] = []
         self._form: Form | None = None
+        self._select_index: int | None = None
+        self._select_has_option = False
+        self._select_has_selected = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         data = {k.lower(): (v or "") for k, v in attrs}
@@ -81,12 +84,33 @@ class PageParser(HTMLParser):
             self.forms.append(self._form)
             if self._form.method == "GET" and self._form.action:
                 self.links.append(self._form.action)
-        elif tag.lower() in {"input", "textarea", "select"} and self._form and data.get("name"):
+        elif tag.lower() == "select" and self._form and data.get("name"):
+            self._select_index = len(self._form.inputs)
+            self._select_has_option = False
+            self._select_has_selected = False
+            self._form.inputs.append((data["name"], "select", ""))
+        elif tag.lower() == "option" and self._form and self._select_index is not None:
+            # Preserve the first option by default, or the first explicitly
+            # selected option. Do not confuse a selected="" attribute with
+            # the absence of the selected boolean attribute.
+            selected = any(key.lower() == "selected" for key, _ in attrs)
+            if (selected and not self._select_has_selected) or (
+                    not self._select_has_option and not self._select_has_selected):
+                name, kind, _ = self._form.inputs[self._select_index]
+                self._form.inputs[self._select_index] = (name, kind, data.get("value", ""))
+            self._select_has_option = True
+            self._select_has_selected |= selected
+        elif tag.lower() in {"input", "textarea"} and self._form and data.get("name"):
             self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "form":
+        if tag.lower() == "select":
+            self._select_index = None
+            self._select_has_option = False
+            self._select_has_selected = False
+        elif tag.lower() == "form":
             self._form = None
+            self._select_index = None
 
 
 @dataclass
@@ -258,7 +282,6 @@ class Scanner:
                 flag_path="The value may be a decoy, example, or real flag. Passive text alone cannot distinguish them.",
                 patch="Remove secrets from public responses and enforce authorization at the data boundary."))
         for form in parser.forms:
-            [name for name, _, _ in form.inputs]
             defaults = tuple((name, value) for name, input_type, value in form.inputs
                              if input_type not in {"submit", "button", "image", "reset", "file"})
             action = self._clean_url(urljoin(response.url, form.action or response.url))
