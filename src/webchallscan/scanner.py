@@ -281,7 +281,7 @@ class Scanner:
         """Inspect JWT-shaped tokens in already-read text/cookies without disclosure."""
         candidates = []
         for token in re.findall(
-            r"(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{4,1200}\\.eyJ[A-Za-z0-9_-]{4,1200}\\.[A-Za-z0-9_-]{0,1500})(?![A-Za-z0-9_-])",
+            r"(?<![A-Za-z0-9_-])(eyJ[A-Za-z0-9_-]{4,1200}\.eyJ[A-Za-z0-9_-]{4,1200}\.[A-Za-z0-9_-]{0,1500})(?![A-Za-z0-9_-])",
             response.text[:MAX_BODY],
         )[:5]:
             candidates.append(("response", token))
