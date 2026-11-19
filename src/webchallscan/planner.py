@@ -72,7 +72,7 @@ def _plan_endpoint(entry: object) -> dict:
         "checks": categories,
         "active_test_status": "not-executed",
         "reason": "Redacted inventory has no replayable request bodies, tokens, or baseline."
-    })
+    }
 
 
 def plan_inventory(data: dict, expected_origin: str | None = None) -> dict:
