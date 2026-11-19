@@ -30,6 +30,7 @@ SSTI_PROBE = "{{7340*3}}"
 SSTI_RESULT = "22020"
 XSS_PROBE = "<wcs7340>"
 MAX_BODY = 1_000_000
+COMMENT_HINTS = ("TODO", "FIXME", "BUG", "HACK", "FLAG", "SECRET", "PASSWORD", "ADMIN", "BACKDOOR", "DEBUG")
 SQL_ERRORS = (
     "sql syntax", "sqlite error", "sqlite3.", "mysql_fetch", "mysqli_sql_exception",
     "pg_query", "postgresql error", "ora-", "unclosed quotation mark", "odbc sql",
@@ -55,6 +56,15 @@ PROFILES = {
 }
 
 
+def _comment_keywords(comment: str) -> set[str]:
+    """Return names of interesting keywords, never raw comment content."""
+    if len(comment) > 100_000:
+        comment = comment[:100_000]
+    return {token for token in COMMENT_HINTS
+            if re.search(r"(?<![A-Za-z0-9_])" + token + r"(?![A-Za-z0-9_])",
+                         comment, re.I)}
+
+
 @dataclass
 class Form:
     action: str
@@ -68,6 +78,7 @@ class PageParser(HTMLParser):
         self.links: list[str] = []
         self.scripts: list[str] = []
         self.forms: list[Form] = []
+        self.comment_hints: set[str] = set()
         self._form: Form | None = None
         self._select_index: int | None = None
         self._select_has_option = False
@@ -105,6 +116,10 @@ class PageParser(HTMLParser):
             self._select_has_selected |= selected
         elif tag.lower() in {"input", "textarea"} and self._form and data.get("name"):
             self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
+
+    def handle_comment(self, data: str) -> None:
+        if len(self.comment_hints) < len(COMMENT_HINTS):
+            self.comment_hints.update(_comment_keywords(data))
 
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() == "select":
@@ -340,6 +355,8 @@ class Scanner:
                 vector=f"GET {redact_url(response.url)} and verify that the value is accepted by the challenge.",
                 flag_path="The value may be a decoy, example, or real flag. Passive text alone cannot distinguish them.",
                 patch="Remove secrets from public responses and enforce authorization at the data boundary."))
+        if parser.comment_hints:
+            out.append(self._comment_hint_finding(response, parser.comment_hints))
         for form in parser.forms:
             defaults = tuple((name, value) for name, input_type, value in form.inputs
                              if input_type not in {"submit", "button", "image", "reset", "file"})
@@ -530,6 +547,31 @@ class Scanner:
                     expected_evidence=f"unencoded {XSS_PROBE} absent from baseline")
         return None
 
+    def _comment_hint_finding(self, response: Response, keywords: set[str]) -> Finding:
+        """Classify observed comment indicators without retaining comment text."""
+        return self._finding(
+            rule="WEB-COMMENT-HINT-001",
+            title="Source comment contains review keywords",
+            severity="info", confidence="medium", url=response.url,
+            evidence="Comment keyword categories: " + ", ".join(sorted(keywords)) +
+                     "; comment content omitted; no sensitive data exposure proven.",
+            vector=f"Review comments manually in GET {redact_url(response.url)}.",
+            patch="Remove sensitive implementation notes from public HTML/JavaScript assets.",
+        )
+
+    def _js_comment_hints(self, response: Response) -> list[Finding]:
+        """Scan bounded JavaScript comment syntax without executing scripts."""
+        if response.status != 200:
+            return []
+        comments = re.findall(
+            r"(?m)^[ \\t]*//(?!#)[^\\r\\n]*|/\\*[\\s\\S]*?\\*/",
+            response.text[:MAX_BODY],
+        )
+        keywords = set()
+        for comment in comments[:100]:
+            keywords.update(_comment_keywords(comment))
+        return [self._comment_hint_finding(response, keywords)] if keywords else []
+
     def _source_map_hints(self, response: Response) -> list[Finding]:
         """Record same-origin JavaScript source-map references without fetching them."""
         if response.status != 200:
@@ -634,6 +676,7 @@ class Scanner:
                         if len(js.text) <= MAX_BODY and js.status == 200:
                             routes.extend(self._static_get_routes(js.text))
                             report.findings.extend(self._source_map_hints(js))
+                            report.findings.extend(self._js_comment_hints(js))
                     except (URLError, OSError, RuntimeError, ValueError):
                         continue
             discovered_routes += len(routes)
