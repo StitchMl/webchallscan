@@ -128,6 +128,23 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Offline JWT metadata audit
+
+Store a JWT from an authorized test in a private local file and run:
+
+```bash
+webchallscan --audit-jwt-file ./jwt.txt
+```
+
+This mode sends **zero network requests**. It parses the compact JWT header
+and payload, reports algorithm and **claim names only**, and flags review
+candidates such as `alg: none`, key-selection headers, HMAC configuration,
+and authorization-related claims. Neither the token, signature, signing key,
+header values nor claim values are included in output. It does **not**
+validate signatures, try signing keys or claim that the server accepts a
+modified token. Keep the input file private and delete it after review.
+Unlike network scanning, this offline operation needs no `--authorized` flag.
+
 ### Passive JavaScript source-map hints
 
 When the crawler already fetches same-origin JavaScript assets linked from HTML,
