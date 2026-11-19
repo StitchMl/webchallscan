@@ -18,6 +18,7 @@ from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
+from .snippets import render_snippets
 from .session import (
     BrowserSession,
     SessionCaptureError,
@@ -55,6 +56,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--burp-procedure", action="store_true",
                    help="print a manual Burp Repeater procedure for each reproducible finding instead of the report")
     p.add_argument("--burp-raw", action="store_true", help="include redacted Raw HTTP request templates in --burp-procedure")
+    p.add_argument("--export-curl", action="store_true", help="print redacted curl reproductions for high-confidence findings")
+    p.add_argument("--export-python", action="store_true", help="print redacted urllib reproductions for high-confidence findings")
     p.add_argument("--include-session-secrets", action="store_true",
                    help="print cookie values in the Burp procedure instead of hiding them")
     p.add_argument("--max-pages", type=int, default=20)
@@ -101,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                 or args.validate_api_contract or args.check_api_cases
                 or args.import_burp or args.from_inventory
                 or args.burp_procedure or args.burp_raw or args.include_session_secrets
+                or args.export_curl or args.export_python
                 or args.expect_origin):
             print("error: --audit-jwt-file is an exclusive offline mode", file=sys.stderr)
             return 2
@@ -116,7 +120,8 @@ def main(argv: list[str] | None = None) -> int:
                 or args.observe_network is not None or args.plan_inventory
                 or args.validate_api_contract or args.check_api_cases or args.from_inventory
                 or args.audit_jwt_file
-                or args.include_session_secrets or args.burp_procedure or args.burp_raw):
+                or args.include_session_secrets or args.burp_procedure or args.burp_raw
+                or args.export_curl or args.export_python):
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
             return 2
         try:
@@ -199,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.authorized:
         print("error: --authorized is required; scan only targets you are permitted to test", file=sys.stderr)
         return 2
+    if (args.export_curl and args.export_python) or (args.burp_procedure and (args.export_curl or args.export_python)):
+        print("error: choose only one of --burp-procedure, --export-curl or --export-python", file=sys.stderr)
+        return 2
     if args.burp_raw and not args.burp_procedure:
         print("error: --burp-raw requires --burp-procedure", file=sys.stderr)
         return 2
@@ -246,6 +254,9 @@ def main(argv: list[str] | None = None) -> int:
                                max_pages=args.max_pages, max_requests=args.max_requests,
                                timeout=args.timeout, verify_tls=not args.insecure,
                                sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls)
+        if args.export_curl or args.export_python:
+            print(render_snippets(report, "curl" if args.export_curl else "python"))
+            return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
         if args.burp_procedure:
             if args.include_session_secrets:
                 print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)

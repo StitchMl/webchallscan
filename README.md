@@ -307,6 +307,23 @@ stay hidden. Work entirely inside Burp Suite Community: capture the request in
 **Proxy > HTTP history**, right-click **Send to Repeater**, edit the named
 parameter to the printed payload, and send.
 
+### Export reproducible curl / Python snippets
+
+To render **text only** for findings with high confidence and proof payloads:
+
+```bash
+webchallscan https://challenge.example/ --authorized --active --export-curl
+webchallscan https://challenge.example/ --authorized --active --export-python
+```
+
+These flags are mutually exclusive with each other and with
+`--burp-procedure`. They do not execute generated requests. Query values,
+hidden POST defaults, and session cookies are replaced with
+`[REDACTED]` placeholders; the specific proof payload is inserted only into
+the reported parameter. Replace placeholders from your own authorized lab
+session before running a snippet. Only URL-encoded form POSTs and GETs are
+currently rendered.
+
 To print a **redacted Raw HTTP/1.1 request template** alongside the existing
 manual Repeater steps, add `--burp-raw`:
 
