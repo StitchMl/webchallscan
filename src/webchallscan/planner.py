@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 
-_FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}\\Z")
+_FIELD = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}\Z")
 _PRIVATE_FIELD = re.compile(
     r"password|passwd|secret|token|csrf|xsrf|auth|cookie|session|"
     r"key|bearer|credential|otp|nonce|signature|private", re.I,
