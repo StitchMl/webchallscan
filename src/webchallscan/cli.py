@@ -37,6 +37,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--authorized", action="store_true", help="required acknowledgment that you may test this target")
     p.add_argument("--active", action="store_true", help="enable bounded, low-impact validation probes; never extracts flags")
     p.add_argument("--ssti-alternates", action="store_true", help="opt into additional bounded SSTI arithmetic syntaxes (requires --active)")
+    p.add_argument("--nosql-query", action="store_true", help="opt into bounded GET bracket-operator differential checks (requires --active)")
     p.add_argument("--profile", choices=("desktop", "mobile", "both"), default="both",
                    help="HTTP client profile; both uses isolated cookies and budgets (default: both)")
     session = p.add_mutually_exclusive_group()
@@ -115,6 +116,13 @@ def _normalize_command(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
+    if args.nosql_query and (
+            not args.active or args.quick or args.validate_api_contract or
+            args.check_api_cases or args.check_json_cases or args.import_burp or
+            args.burp_session_from or args.plan_inventory or args.audit_jwt_file or
+            args.observe_network is not None):
+        print("error: --nosql-query applies only to --active scanner mode", file=sys.stderr)
+        return 2
     if args.extension_path:
         try:
             print(_extension_path())
@@ -329,7 +337,8 @@ def main(argv: list[str] | None = None) -> int:
                                max_pages=args.max_pages, max_requests=args.max_requests,
                                timeout=args.timeout, verify_tls=not args.insecure,
                                sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls,
-                               ssti_alternates=args.ssti_alternates)
+                               ssti_alternates=args.ssti_alternates,
+                               nosql_query=args.nosql_query)
         if args.export_curl or args.export_python:
             print(render_snippets(report, "curl" if args.export_curl else "python"))
             return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
