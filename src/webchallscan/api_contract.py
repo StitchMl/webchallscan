@@ -12,14 +12,11 @@ import json
 import re
 import ssl
 from pathlib import Path
-from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.request import HTTPSHandler, Request, build_opener
 
+from .http_client import NoRedirect, read_bounded
 
-class NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 ALLOWED_HEADERS = {"authorization", "cookie", "x-api-key"}
 PROBES = ("", "WCS_TEST_0123", "0", "-1", "a" * 64)
@@ -29,11 +26,8 @@ def _fetch(url, headers, timeout, *, verify_tls=True):
     handlers = [NoRedirect]
     if not verify_tls:
         handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
-    try:
-        with build_opener(*handlers).open(request, timeout=timeout) as response:
-            raw, status = response.read(65537), response.status
-    except HTTPError as exc:
-        raw, status = exc.read(65537), exc.code
+    response = read_bounded(build_opener(*handlers), request, timeout, 65537)
+    raw, status = response.body, response.status
     if len(raw) > 65536:
         raise ValueError("response exceeded 64 KiB limit")
     return {"status": status, "length": len(raw), "digest": hashlib.sha256(raw).hexdigest(),
