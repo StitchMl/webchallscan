@@ -60,7 +60,8 @@ def test_extension_session_preserves_active_url_and_http_only_cookie():
     assert dict(session.headers)["User-Agent"] == "Browser/1.0"
 
 
-def test_session_file_accepts_extension_contract(tmp_path):
+def test_session_file_accepts_extension_contract(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     path = tmp_path / "session.json"
     path.write_text(json.dumps(extension_payload()), encoding="utf-8")
     assert load_session_file(str(path)).source == "session-file"
