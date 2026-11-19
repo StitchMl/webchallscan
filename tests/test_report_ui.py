@@ -5,7 +5,7 @@ from webchallscan.model import Finding, ScanReport
 from webchallscan.report import render_json, render_text
 
 
-ANSI_PATTERN = re.compile(r"\x1b\\[[0-9;]*m")
+ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def sample():
