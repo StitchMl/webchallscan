@@ -94,6 +94,14 @@ webchallscan --audit-jwt-file jwt.txt --human
 schemas. Leave it out when using `> results.json`. It cannot be combined
 with `--format json`; `--color never` disables all ANSI escapes.
 
+### Local CDP JSON endpoint isolation
+
+Browser discovery now reads `/json/version` and `/json/list` through an
+explicit **no-proxy, no-redirect** loopback-only HTTP transport. It rejects
+off-host addresses, oversized responses (more than 2 MB) and invalid JSON
+before returning browser metadata. Environment proxy settings cannot cause
+the session's local browser discovery traffic to leave the machine.
+
 ### CDP transport safety
 
 The local CDP WebSocket reader now rejects frames larger than **2 MB**

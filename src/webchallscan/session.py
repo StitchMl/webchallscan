@@ -18,7 +18,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, ProxyHandler, build_opener
+
+from .http_client import NoRedirect
 
 SAFE_HEADERS = {"user-agent", "accept-language"}
 COMMON_CDP_ENDPOINTS = {
@@ -53,9 +55,26 @@ class BrowserSession:
 
 
 def _json_get(url: str, timeout: float) -> Any:
+    """Read only a bounded local CDP JSON endpoint without redirect/proxy leaks."""
+    _loopback_url(url, {"http", "https"})
+    parsed = urlsplit(url)
+    if parsed.fragment or parsed.username or parsed.password:
+        raise SessionCaptureError("invalid local CDP JSON endpoint")
     request = Request(url, headers={"Accept": "application/json", "Cache-Control": "no-store"})
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read(2_000_000).decode("utf-8"))
+    # Ignore HTTP_PROXY/HTTPS_PROXY and NO_PROXY from the environment. Never
+    # follow a redirect to an external site with local browser context.
+    opener = build_opener(ProxyHandler({}), NoRedirect)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(2_000_001)
+    except OSError as exc:
+        raise SessionCaptureError("cannot read local CDP JSON endpoint") from exc
+    if len(raw) > 2_000_000:
+        raise SessionCaptureError("CDP JSON response exceeds 2 MB")
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise SessionCaptureError("invalid local CDP JSON response") from exc
 
 
 def _loopback_url(value: str, schemes: set[str]) -> None:
