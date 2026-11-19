@@ -32,7 +32,8 @@ def fixture_session(tmp_path):
     return file, jwt, hex_value, b64_value
 
 
-def test_aggregate_cookie_format_audit_never_exposes_names_or_values(tmp_path):
+def test_aggregate_cookie_format_audit_never_exposes_names_or_values(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file, jwt, hex_value, b64_value = fixture_session(tmp_path)
     report = audit_session_file(str(file))
     assert report["cookie_count"] == 5
@@ -52,7 +53,8 @@ def test_aggregate_cookie_format_audit_never_exposes_names_or_values(tmp_path):
         assert secret not in output
 
 
-def test_session_audit_cli_is_exclusive_and_offline(tmp_path, capsys):
+def test_session_audit_cli_is_exclusive_and_offline(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     file, _, _, _ = fixture_session(tmp_path)
     assert main(["--audit-session-file", str(file)]) == 0
     result = json.loads(capsys.readouterr().out)
