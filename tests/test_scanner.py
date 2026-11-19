@@ -574,3 +574,40 @@ def test_nonget_js_hints_ignore_dynamic_and_external_routes(server):
         "fetch('/api/write', {method: 'POST'});"
     ))
     assert [f.url for f in hints] == [server + "/api/write"]
+
+def test_passive_jwt_discovery_from_response_and_cookies_redacts_values(server):
+    import base64
+    import json
+    from types import SimpleNamespace
+    from webchallscan.scanner import Response
+
+    def encode(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+    jwt = (encode({"alg": "none"}) + "." +
+           encode({"sub": "private@example.com", "role": "ADMINSECRET"}) +
+           ".signature")
+    scanner = Scanner(server + "/jwt?secret=PRIVATE")
+    scanner.cookies = [SimpleNamespace(value=jwt)]
+    response = Response(server + "/jwt?secret=PRIVATE", 200,
+        {"content-type": "text/html"}, "<script>const token='" + jwt + "';</script>")
+    findings = scanner._jwt_metadata_hints(response)
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.rule == "WEB-JWT-METADATA-001"
+    assert finding.severity == "info"
+    assert finding.exploit_status == "validation-only"
+    assert "JWT-ALG-NONE" in finding.evidence
+    assert "cookie" in finding.evidence and "response" in finding.evidence
+    public = repr(finding.to_dict())
+    for secret in (jwt, "private@example.com", "ADMINSECRET", "PRIVATE", "signature"):
+        assert secret not in public
+    assert finding.to_dict()["replay"]["cookie_names"] == []
+    assert scanner.requests_sent == 0
+
+
+def test_passive_jwt_discovery_ignores_invalid_strings(server):
+    from webchallscan.scanner import Response
+    scanner = Scanner(server)
+    assert scanner._jwt_metadata_hints(Response(
+        server + "/", 200, {}, "eyJinvalid.eyJinvalid.signature"
+    )) == []
