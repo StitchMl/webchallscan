@@ -161,7 +161,8 @@ class Scanner:
                  profile: str = "desktop", session: BrowserSession | None = None,
                  proxy: str | None = None,
                  inventory_urls: tuple[str, ...] = (),
-                 ssti_alternates: bool = False) -> None:
+                 ssti_alternates: bool = False,
+                 nosql_query: bool = False) -> None:
         parsed = urlsplit(target)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("target must be an absolute http:// or https:// URL")
@@ -169,6 +170,7 @@ class Scanner:
         self.origin = (parsed.scheme.lower(), parsed.netloc.lower())
         self.active = active
         self.ssti_alternates = ssti_alternates
+        self.nosql_query = nosql_query
         self.max_pages = max(1, max_pages)
         self.timeout = max(0.1, timeout)
         self.max_requests = max(1, max_requests)
@@ -560,6 +562,57 @@ class Scanner:
                     expected_evidence=f"unencoded {XSS_PROBE} absent from baseline")
         return None
 
+    def _nosql_query_review(self, finding: Finding) -> Finding | None:
+        """Conservative repeated GET scalar/bracket differential; never proof."""
+        if self.requests_sent + 4 > self.max_requests:
+            return None
+        if finding.method != "GET" or not re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_]{0,39}", finding.parameter):
+            return None
+        params = parse_qsl(urlsplit(finding.url).query, keep_blank_values=True)
+        if finding.parameter not in {key for key, _ in params}:
+            return None
+        if any(k.lower() in finding.parameter.lower() for k in
+               ("password", "token", "secret", "session", "csrf")):
+            return None
+        marker = "WCS_NONMATCH_7340"
+        normal_url = self._set_query(finding.url, finding.parameter, marker)
+        parts = urlsplit(finding.url)
+        operator_query = [(k, v) for k, v in params if k != finding.parameter]
+        operator_query.append((finding.parameter + "[$ne]", marker))
+        operator_url = urlunsplit((
+            parts.scheme, parts.netloc, parts.path, urlencode(operator_query), "",
+        ))
+        baseline_a = self._request(normal_url)
+        baseline_b = self._request(normal_url)
+        tested_a = self._request(operator_url)
+        tested_b = self._request(operator_url)
+        # Echoing a marker or its encoded form is not evidence of query
+        # operator handling and makes response comparison misleading.
+        outputs = (baseline_a, baseline_b, tested_a, tested_b)
+        if any(marker in result.text or quote_plus(marker) in result.text
+               for result in outputs):
+            return None
+        def signature(response: Response) -> tuple[int, str]:
+            return (response.status,
+                    sha256(response.text.encode("utf-8", "replace")).hexdigest())
+        left = signature(baseline_a)
+        right = signature(tested_a)
+        if (left != signature(baseline_b)
+                or right != signature(tested_b) or left == right):
+            return None
+        return self._finding(
+            rule="WEB-NOSQL-REVIEW-001",
+            title="GET bracket-operator response differential",
+            severity="info", confidence="low", url=finding.url,
+            parameter=finding.parameter, method="GET",
+            evidence="Repeated scalar and [$ne] query variants produced stable "
+                     "different responses; input validation may explain the result.",
+            vector=f"Compare GET {redact_url(finding.url)} with scalar and bracketed parameter variants.",
+            patch="Use typed input validation; reject unexpected object operators.",
+            flag_path="Manual validation is required; this is not a confirmed NoSQL injection.",
+        )
+
     def _comment_hint_finding(self, response: Response, keywords: set[str]) -> Finding:
         """Classify observed comment indicators without retaining comment text."""
         return self._finding(
@@ -764,6 +817,24 @@ class Scanner:
                 f"Seeded {len(self.inventory_urls)} GET endpoint(s) from a redacted inventory; "
                 "all requests remain subject to normal scan budgets."
             )
+        if self.active and self.nosql_query:
+            reviewed: set[tuple[str, str]] = set()
+            for finding in candidates:
+                if finding.method != "GET" or finding.rule != "WEB-SQLI-001":
+                    continue
+                key = (finding.url, finding.parameter)
+                if key in reviewed:
+                    continue
+                reviewed.add(key)
+                if len(reviewed) > 3 or self.requests_sent + 4 > self.max_requests:
+                    break
+                try:
+                    review = self._nosql_query_review(finding)
+                    if review:
+                        report.findings.append(review)
+                except (URLError, OSError, RuntimeError, ValueError):
+                    report.errors.append(
+                        f"noSQL review {redact_url(finding.url)}: request failed")
         if discovered_routes == 0 and not self.inventory_urls:
             report.coverage.append(
                 "No navigable links, GET form actions or literal script GET routes were discovered. "
@@ -788,7 +859,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
                   sessions: dict[str, BrowserSession] | None = None,
                   proxy: str | None = None,
                   inventory_urls: tuple[str, ...] = (),
-                  ssti_alternates: bool = False) -> ScanReport:
+                  ssti_alternates: bool = False,
+                  nosql_query: bool = False) -> ScanReport:
     """Run isolated profile scans and combine results in stable order."""
     if not profiles or any(profile not in PROFILES for profile in profiles):
         raise ValueError("profiles must contain desktop and/or mobile")
@@ -799,7 +871,8 @@ def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobil
                           max_requests=max_requests, verify_tls=verify_tls, profile=profile,
                           session=(sessions or {}).get(profile), proxy=proxy,
                           inventory_urls=inventory_urls,
-                          ssti_alternates=ssti_alternates)
+                          ssti_alternates=ssti_alternates,
+                          nosql_query=nosql_query)
         scanners[profile] = scanner
         reports.append(scanner.scan())
     combined = ScanReport(
