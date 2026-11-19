@@ -205,6 +205,19 @@ authorization, CSRF tokens and POST bodies are **not** exported. A
 success message contains no cookie material. Delete `session.json`
 after testing and never commit it or the original Burp export.
 
+### Passive CSRF presence hints from Burp history
+
+When importing Burp XML, the tool now inspects bounded, previously captured
+POST/PUT/PATCH/DELETE requests for common CSRF marker names in headers,
+URL-encoded form fields and JSON keys. Only fixed **categories** (header,
+form-field, json-field) appear as informational findings. Raw request bodies,
+cookie/header contents, token names and token values remain excluded.
+
+This is **not** proof that CSRF protection works (or is missing), and it
+never attempts replay, token reuse or state-changing requests. Requests
+without recognizable markers remain unclassified; absence is not evidence
+of a CSRF vulnerability. The import remains strictly offline.
+
 ### Offline Burp Suite XML history import
 
 Export selected items from Burp Suite's HTTP history or Site Map as XML.

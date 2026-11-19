@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
+from urllib.parse import parse_qsl
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
@@ -53,6 +55,68 @@ def _response_headers(item: ET.Element) -> tuple[dict[str, str], tuple[str, ...]
         }:
             headers[key] = value.decode("utf-8", "replace").strip()[:4096]
     return headers, tuple(cookies)
+
+
+_CSRF_NAMES = frozenset({
+    "csrf", "_csrf", "csrf_token", "csrftoken", "xsrf_token",
+    "_xsrf", "authenticity_token", "__requestverificationtoken",
+    "x-csrf-token", "x-xsrf-token", "x-csrftoken",
+})
+
+
+def _csrf_request_sources(item: ET.Element, method: str) -> tuple[str, ...]:
+    """Identify CSRF marker *presence* in already captured writes, never values."""
+    if method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return ()
+    node = item.find("request")
+    if node is None or not node.text:
+        return ()
+    raw_text = node.text.strip()
+    if not raw_text or len(raw_text) > 350_000:
+        return ()
+    try:
+        raw = (base64.b64decode(raw_text, validate=True)
+               if node.get("base64", "").lower() == "true"
+               else raw_text.encode("utf-8", "replace"))
+    except (ValueError, binascii.Error):
+        return ()
+    if len(raw) > 200_000:
+        return ()
+    if b"\r\n\r\n" in raw:
+        head, body = raw.split(b"\r\n\r\n", 1)
+    elif b"\n\n" in raw:
+        head, body = raw.split(b"\n\n", 1)
+    else:
+        head, body = raw, b""
+    content_type = ""
+    found: set[str] = set()
+    for line in head.splitlines()[1:100]:
+        name, separator, value = line.partition(b":")
+        if not separator:
+            continue
+        name = name.decode("ascii", "ignore").strip().lower()
+        if name in _CSRF_NAMES:
+            found.add("header")
+        if name == "content-type":
+            content_type = value.decode("ascii", "ignore").strip().lower()[:128]
+    if "application/x-www-form-urlencoded" in content_type and len(body) <= 100_000:
+        try:
+            names = (name.lower() for name, _ in parse_qsl(
+                body.decode("utf-8", "replace"), keep_blank_values=True,
+                max_num_fields=100,
+            ))
+            if any(name in _CSRF_NAMES for name in names):
+                found.add("form-field")
+        except ValueError:
+            pass
+    elif "application/json" in content_type and len(body) <= 100_000:
+        # Parse JSON *keys* only, never retain values or reflect arbitrary keys.
+        # Regex is conservative: no claims about nested/dynamic CSRF protection.
+        if any(re.search(rb'"' + name.encode("ascii") +
+                         rb'"\s*:', body, re.I)
+               for name in _CSRF_NAMES):
+            found.add("json-field")
+    return tuple(sorted(found))
 
 
 def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
@@ -120,6 +184,22 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
         if 100 <= status <= 599:
             if status not in record["statuses"]:
                 record["statuses"].append(status)
+            sources = _csrf_request_sources(item, str(entry["method"]))
+            if sources:
+                signal = {
+                    "rule": "BURP-CSRF-MARKER-001",
+                    "title": "CSRF-named request metadata observed",
+                    "severity": "info",
+                    "confidence": "low",
+                    "method": str(entry["method"]),
+                    "path": str(entry["path"]),
+                    "status": str(status),
+                    "evidence": "Captured request contains CSRF marker categories: " +
+                                ", ".join(sources) +
+                                "; names and token values omitted. Protection effectiveness unverified.",
+                }
+                key = (signal["rule"], signal["method"], signal["path"])
+                posture[key] = signal
             headers, cookies = _response_headers(item)
             is_document = (entry["method"] == "GET" and
                            "text/html" in headers.get("content-type", "").lower())
