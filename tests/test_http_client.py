@@ -69,3 +69,47 @@ def test_limits_and_redirect_policy():
     handler = NoRedirect()
     assert handler.redirect_request(None, None, 302, "redirect", {},
                                     "http://elsewhere.invalid/") is None
+
+def test_shared_scanner_handlers_preserve_proxy_tls_cookie_and_redirect_policy():
+    import ssl
+    from http.cookiejar import CookieJar
+    from urllib.request import HTTPCookieProcessor, HTTPSHandler, ProxyHandler
+    from webchallscan.http_client import (
+        SameOriginRedirectHandler, scanner_handlers,
+    )
+
+    cookies = CookieJar()
+    handlers = scanner_handlers(
+        ("https", "lab.example"), cookies, verify_tls=True,
+        proxy="http://127.0.0.1:8080",
+    )
+    assert isinstance(handlers[0], ProxyHandler)
+    assert isinstance(handlers[1], SameOriginRedirectHandler)
+    assert handlers[1].origin == ("https", "lab.example")
+    assert any(isinstance(h, HTTPCookieProcessor) and h.cookiejar is cookies
+               for h in handlers)
+    tls = next(h for h in handlers if isinstance(h, HTTPSHandler))
+    assert tls._context.verify_mode == ssl.CERT_REQUIRED
+    insecure = scanner_handlers(
+        ("https", "lab.example"), cookies, verify_tls=False,
+    )
+    assert not any(isinstance(h, ProxyHandler) for h in insecure)
+    assert next(h for h in insecure if isinstance(h, HTTPSHandler))._context.verify_mode == ssl.CERT_NONE
+
+
+def test_shared_api_handlers_retain_verified_default_and_explicit_opt_out():
+    import ssl
+    from urllib.request import HTTPSHandler
+    from webchallscan.http_client import api_handlers, validate_loopback_proxy
+
+    assert api_handlers() == [NoRedirect]
+    insecure = api_handlers(verify_tls=False)
+    assert insecure[0] is NoRedirect
+    assert len(insecure) == 2
+    assert isinstance(insecure[1], HTTPSHandler)
+    assert insecure[1]._context.verify_mode == ssl.CERT_NONE
+    assert validate_loopback_proxy("http://localhost:8080") == "http://localhost:8080"
+    for invalid in ("http://example.com:8080", "https://127.0.0.1:8080",
+                    "http://user:secret@localhost:8080", "http://localhost/other"):
+        with pytest.raises(ValueError):
+            validate_loopback_proxy(invalid)
