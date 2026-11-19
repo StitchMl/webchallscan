@@ -153,6 +153,16 @@ authentication flows, endpoint parameters and state-changing methods. Each
 planned check is marked `not-executed`; no vulnerability claim is produced
 without real validation. This stage never replays captured HTTP traffic.
 
+### Passive JWT metadata in crawled responses and session cookies
+
+During ordinary crawling, the scanner can classify JWT-shaped strings already
+present in HTTP response text or its existing cookie jar. It reuses the
+offline decoder and records only which source categories were observed and
+which JWT review indicators apply (such as `alg: none`).
+Token bytes, cookie names, claim values and signatures are **not** included
+in findings. No extra requests or signature verification are performed.
+This is informational metadata only; it is not an authentication bypass.
+
 ### Offline session cookie format review
 
 A session JSON file captured from the browser extension, CDP or an explicitly
