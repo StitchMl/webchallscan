@@ -32,8 +32,8 @@ def test_markdown_export_is_readable_redacted_and_severity_sorted():
     assert "| HIGH | 1 |" in result
     assert "## Finding details" in result
     assert result.index("SQL error") < result.index("Passive")
-    assert r"Passive \\<review\\> \\| note" in result
-    assert r"note \\*needs\\* review" in result
+    assert r"Passive \<review\> \| note" in result
+    assert r"note \*needs\* review" in result
     assert "PRIVATE" not in result
     assert "\x1b[" not in result
     assert "## Coverage limitations" in result
