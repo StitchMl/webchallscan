@@ -84,3 +84,32 @@ def test_cli_burp_mode_is_offline_and_requires_authorization(tmp_path, capsys, m
     payload = json.loads(capsys.readouterr().out)
     assert payload["observed_requests"] == 2
     assert main(["https://lab.example", "--authorized", "--import-burp", str(file)]) == 2
+
+
+def test_import_refuses_outside_workspace_and_symlink(tmp_path, monkeypatch):
+    from pathlib import Path
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = tmp_path / "secrets.xml"
+    source.write_text(_xml("HTTP/1.1 200 OK\\r\\n\\r\\n"))
+    monkeypatch.chdir(workspace)
+    with pytest.raises(ValueError, match="working directory"):
+        import_burp_xml(str(source))
+    with pytest.raises(ValueError, match="working directory"):
+        import_burp_xml("../secrets.xml")
+    alias = workspace / "linked.xml"
+    alias.symlink_to(source)
+    with pytest.raises(ValueError, match="working directory"):
+        import_burp_xml(str(alias))
+
+
+def test_import_requires_regular_xml_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "history.txt"
+    source.write_text(_xml("HTTP/1.1 200 OK\\r\\n\\r\\n"))
+    with pytest.raises(ValueError, match="regular .xml"):
+        import_burp_xml(str(source))
+    directory = tmp_path / "folder.xml"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular .xml"):
+        import_burp_xml(str(directory))
