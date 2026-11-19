@@ -88,6 +88,31 @@ Chrome 136+ requires a non-default user-data directory for remote debugging.
 Keep port 9222 bound to loopback and do not use this profile for sensitive
 personal browsing. Do not expose CDP to another device or the internet.
 
+### Explicit Burp Cookie to private scanner session
+
+For an **authorized disposable lab**, you can select a GET request with a
+`Cookie` header from a Burp XML history export and create a private
+`--session-file` input. This is intentionally separate from the normal
+redacted, zero-secret `--import-burp` command.
+
+```bash
+webchallscan --authorized --burp-session-from history.xml \
+  --burp-session-out session.json --expect-origin https://challenge.example \
+  --allow-secret-export
+
+webchallscan --authorized --session-file session.json --active
+```
+
+This exports **live cookie values** to a newly created, exclusive file
+(mode 0600 on POSIX). It refuses existing output files, external origins,
+non-GET request sources, invalid cookie names and malformed XML.
+For safer scope, cookies are restricted to the path of the selected GET:
+their original `Path`, `HttpOnly` and `SameSite` attributes cannot
+be reconstructed from a request `Cookie` header. User-Agent, Bearer
+authorization, CSRF tokens and POST bodies are **not** exported. A
+success message contains no cookie material. Delete `session.json`
+after testing and never commit it or the original Burp export.
+
 ### Offline Burp Suite XML history import
 
 Export selected items from Burp Suite's HTTP history or Site Map as XML.
