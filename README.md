@@ -88,6 +88,25 @@ Chrome 136+ requires a non-default user-data directory for remote debugging.
 Keep port 9222 bound to loopback and do not use this profile for sensitive
 personal browsing. Do not expose CDP to another device or the internet.
 
+### Offline Burp Suite XML history import
+
+Export selected items from Burp Suite's HTTP history or Site Map as XML.
+Import the local file without generating **any** requests or replaying POSTs:
+
+```powershell
+webchallscan --authorized --import-burp .\\history.xml --expect-origin https://challenge.example > burp-inventory.json
+webchallscan --authorized --plan-inventory .\\burp-inventory.json --expect-origin https://challenge.example > audit-plan.json
+```
+
+The importer accepts up to 5 MB of XML and 500 items, rejects DTD/entity
+declarations, and limits processing to one exact HTTP(S) origin. It retains
+methods, paths, query **parameter names**, status codes, event counts, and
+redacted response-header configuration signals. Request headers, cookies,
+query values, raw response bodies and credentials are never included in output.
+An item without a readable response is still inventoried but cannot contribute
+header observations. Reports are planning evidence, not proofs of exploitation.
+Store the original Burp export securely: it may contain live secrets.
+
 ### Offline audit plan from the observed endpoints
 
 Turn any saved CDP inventory into a structured review plan without making
