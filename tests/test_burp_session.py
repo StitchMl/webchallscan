@@ -26,7 +26,8 @@ def burp_xml():
         "</items>")
 
 
-def test_burp_session_export_private_scope_and_loader_compat(tmp_path):
+def test_burp_session_export_private_scope_and_loader_compat(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     result = export_burp_session(str(source), str(dest), "https://lab.example")
@@ -44,7 +45,8 @@ def test_burp_session_export_private_scope_and_loader_compat(tmp_path):
     assert "MUST_NOT_EXPORT" not in dest.read_text()
 
 
-def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path):
+def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     with pytest.raises(ValueError):
@@ -55,7 +57,8 @@ def test_burp_session_rejects_overwrite_and_origin_mismatch(tmp_path):
         export_burp_session(str(source), str(dest), "https://lab.example")
 
 
-def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys):
+def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source, dest = tmp_path / "burp.xml", tmp_path / "session.json"
     source.write_text(burp_xml())
     args = ["--burp-session-from", str(source), "--burp-session-out", str(dest),
@@ -70,9 +73,46 @@ def test_burp_session_cli_requires_explicit_secret_export(tmp_path, capsys):
     assert "MUST_NOT_EXPORT" not in visible.out + visible.err
 
 
-def test_burp_session_rejects_dtd(tmp_path):
+def test_burp_session_rejects_dtd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     source = tmp_path / "bad.xml"
     source.write_text('<!DOCTYPE items [<!ENTITY x "secret">]><items>&x;</items>')
     with pytest.raises(ValueError):
         export_burp_session(str(source), str(tmp_path / "session.json"),
                             "https://lab.example")
+
+
+def test_session_export_refuses_input_outside_working_directory(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "outside.xml"
+    external.write_text(burp_xml())
+    monkeypatch.chdir(workspace)
+    output = workspace / "private.json"
+    for source in (str(external), "../outside.xml"):
+        with pytest.raises(ValueError, match="working directory"):
+            export_burp_session(source, str(output), "https://lab.example")
+        assert not output.exists()
+    symlink = workspace / "alias.xml"
+    symlink.symlink_to(external)
+    with pytest.raises(ValueError, match="working directory"):
+        export_burp_session(str(symlink), str(output), "https://lab.example")
+    assert not output.exists()
+
+
+def test_session_export_rejects_non_xml_and_oversize_without_output(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / "private.json"
+    not_xml = tmp_path / "bad.txt"
+    not_xml.write_text(burp_xml())
+    with pytest.raises(ValueError, match="regular .xml"):
+        export_burp_session(str(not_xml), str(output), "https://lab.example")
+    oversized = tmp_path / "large.xml"
+    oversized.write_bytes(b" " * 5_000_001)
+    with pytest.raises(ValueError, match="5 MB"):
+        export_burp_session(str(oversized), str(output), "https://lab.example")
+    directory = tmp_path / "directory.xml"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular .xml"):
+        export_burp_session(str(directory), str(output), "https://lab.example")
+    assert not output.exists()

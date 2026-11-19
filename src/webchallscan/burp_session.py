@@ -14,7 +14,7 @@ import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit, urlunsplit
 
-from .burp_import import MAX_XML, MAX_ITEMS
+from .burp_import import MAX_ITEMS, read_bounded_burp_xml
 from .session import load_session_file
 
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$")
@@ -93,10 +93,7 @@ def export_burp_session(xml_path: str, output_path: str,
             or parsed_origin.query or parsed_origin.fragment):
         raise ValueError("exact HTTP(S) --expect-origin is required")
     expected = (parsed_origin.scheme.lower(), parsed_origin.netloc.lower())
-    xml_file = Path(xml_path)
-    if xml_file.stat().st_size > MAX_XML:
-        raise ValueError("Burp XML export exceeds 5 MB")
-    raw = xml_file.read_bytes()
+    raw = read_bounded_burp_xml(xml_path)
     if b"<!doctype" in raw.lower() or b"<!entity" in raw.lower():
         raise ValueError("DTD and XML entities are prohibited")
     try:
