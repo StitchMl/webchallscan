@@ -41,7 +41,7 @@ def read_bounded(opener, request, timeout: float, max_bytes: int) -> BoundedResp
             return BoundedResponse(
                 response.geturl() if hasattr(response, "geturl") else request.full_url,
                 response.status,
-                response.headers,
+                getattr(response, "headers", {}),
                 response.read(max_bytes),
                 False,
             )
