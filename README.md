@@ -243,9 +243,27 @@ never attempts replay, token reuse or state-changing requests. Requests
 without recognizable markers remain unclassified; absence is not evidence
 of a CSRF vulnerability. The import remains strictly offline.
 
+### Passive JSON field inventory from Burp POST history
+
+Burp XML imports now record up to twelve nested string-field paths from
+previously captured `application/json` POST bodies. Values, authentication
+and CSRF field names, cookies and raw request bytes are always omitted.
+Fields in arrays, dynamic keys and deeply nested objects are not inferred.
+The summary view (`--human`) shows a per-endpoint JSON-field count.
+The JSON inventory includes optional `json_fields` arrays of field paths.
+
+These are **manual review candidates**, not executable test cases.
+The existing `--check-json-cases` command still requires an independently
+prepared file and explicit `--authorized --active` approval. No captured
+POST requests are replayed automatically.
+
 ### Offline Burp Suite XML history import
 
 Export selected items from Burp Suite's HTTP history or Site Map as XML.
+Only regular `.xml` files in the current working directory or its subdirectories
+are accepted. Change into the export directory before importing an external
+file. Symlink escapes and files exceeding 5 MB are rejected.
+
 Import the local file without generating **any** requests or replaying POSTs:
 
 ```powershell

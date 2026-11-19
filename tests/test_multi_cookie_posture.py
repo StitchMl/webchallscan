@@ -59,7 +59,8 @@ def test_scanner_reads_all_set_cookie_headers_without_additional_requests():
     assert "SECRET" not in repr([f.to_dict() for f in findings])
 
 
-def test_burp_import_checks_multiple_cookie_lines_offline(tmp_path):
+def test_burp_import_checks_multiple_cookie_lines_offline(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     raw = (
         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
         "Set-Cookie: first=SAFE; Secure; HttpOnly; SameSite=Lax\r\n"

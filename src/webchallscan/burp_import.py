@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 import re
+import stat
 from urllib.parse import parse_qsl
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
 from .network import _safe_request
+from .burp_json_hints import json_string_field_hints
 from .posture import inspect_response
 
 MAX_XML = 5_000_000
@@ -120,10 +123,27 @@ def _csrf_request_sources(item: ET.Element, method: str) -> tuple[str, ...]:
 
 
 def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
-    file = Path(path)
-    if file.stat().st_size > MAX_XML:
+    # The export path is operator-controlled, not a URL or a remote fetch.
+    # Restrict agent-supplied paths to the working tree and read a regular
+    # file with a hard cap (not stat() followed by an unbounded read).
+    try:
+        file = Path(path).resolve(strict=True)
+        file.relative_to(Path.cwd().resolve())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Burp XML must be inside the working directory") from exc
+    if file.suffix.lower() != ".xml" or not file.is_file():
+        raise ValueError("Burp input must be a regular .xml file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(file, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("Burp input must be a regular .xml file")
+            raw = stream.read(MAX_XML + 1)
+    except OSError as exc:
+        raise ValueError("cannot read Burp XML export") from exc
+    if len(raw) > MAX_XML:
         raise ValueError("Burp XML export exceeds the 5 MB limit")
-    raw = file.read_bytes()
     # Refuse DTDs/entities instead of processing potentially hostile exports.
     if b"<!doctype" in raw.lower() or b"<!entity" in raw.lower():
         raise ValueError("DTD and XML entities are not supported")
@@ -176,6 +196,13 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
             **entry, "type": "BurpHistory", "statuses": [], "count": 0,
         })
         record["count"] += 1
+        # Metadata only: never store the captured body or any value.
+        hints = json_string_field_hints(item, str(entry["method"]))
+        if hints:
+            known = record.setdefault("json_fields", [])
+            for field in hints:
+                if field not in known and len(known) < 12:
+                    known.append(field)
         raw_status = item.findtext("status", "")
         try:
             status = int(raw_status)
@@ -221,6 +248,8 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
     ))
     for endpoint in endpoints:
         endpoint["statuses"].sort()
+        if "json_fields" in endpoint:
+            endpoint["json_fields"].sort()
     return {
         "schema": "webchallscan/network-inventory-v1",
         "origin": origin[0] + "://" + origin[1],
@@ -233,6 +262,7 @@ def import_burp_xml(path: str, expected_origin: str | None = None) -> dict:
             "Offline Burp XML import: no HTTP requests or active tests were sent.",
             "Only one exact origin is included; other origins are ignored.",
             "Request bodies, raw responses, credentials and parameter values are discarded.",
+            "JSON POST field paths are passive hints only; no request is replayed.",
             "Header configuration signals are not confirmed exploitability.",
         ],
     }
