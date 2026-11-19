@@ -13,6 +13,7 @@ from .access_checks import load_cases, run_readonly_cases
 from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
 from .jwt_audit import audit_jwt_file
+from .json_checks import load_json_cases, run_json_cases
 from .network import observe_cdp
 from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
@@ -47,6 +48,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--observe-network", type=float, metavar="SECONDS", help="read-only CDP traffic inventory while you navigate (requires --cdp)")
     p.add_argument("--validate-api-contract", metavar="JSON", help="bounded GET-only IDOR, fuzz and business invariant checks")
     p.add_argument("--check-api-cases", metavar="JSON", help="explicit read-only GET comparisons with two lab roles")
+    p.add_argument("--check-json-cases", metavar="JSON", help="explicit active JSON POST validation cases; requires --active")
     p.add_argument("--plan-inventory", metavar="JSON", help="offline security review plan from a CDP inventory; no requests")
     p.add_argument("--import-burp", metavar="XML", help="offline redacted inventory from a Burp Suite XML HTTP history export")
     p.add_argument("--audit-jwt-file", metavar="FILE", help="offline JWT structure and metadata audit without printing token values")
@@ -117,14 +119,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
     if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file):
+                       args.validate_api_contract or args.check_api_cases or args.import_burp or args.audit_jwt_file or args.check_json_cases):
         print("error: --proxy is supported only in scanner mode", file=sys.stderr)
         return 2
     if args.audit_jwt_file is not None:
         if (args.url or args.active or args.cdp or args.browser_session
                 or args.session_file or args.listen_session or args.quick
                 or args.observe_network is not None or args.plan_inventory
-                or args.validate_api_contract or args.check_api_cases
+                or args.validate_api_contract or args.check_api_cases or args.check_json_cases
                 or args.import_burp or args.from_inventory
                 or args.burp_procedure or args.burp_raw or args.include_session_secrets
                 or args.export_curl or args.export_python
@@ -142,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
                 or args.session_file or args.listen_session or args.quick
                 or args.observe_network is not None or args.plan_inventory
                 or args.validate_api_contract or args.check_api_cases or args.from_inventory
-                or args.audit_jwt_file
+                or args.check_json_cases or args.audit_jwt_file
                 or args.include_session_secrets or args.burp_procedure or args.burp_raw
                 or args.export_curl or args.export_python):
             print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
@@ -152,6 +154,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         except (ValueError, OSError) as exc:
             print(f"error: Burp XML import failed: {exc}", file=sys.stderr)
+            return 2
+    if args.check_json_cases is not None:
+        if (not args.authorized or not args.active or args.url or args.quick
+                or args.cdp or args.browser_session or args.session_file
+                or args.listen_session or args.observe_network is not None
+                or args.plan_inventory or args.import_burp or args.from_inventory
+                or args.validate_api_contract or args.check_api_cases
+                or args.audit_jwt_file or args.burp_procedure or args.burp_raw
+                or args.include_session_secrets or args.export_curl
+                or args.export_python):
+            print("error: --check-json-cases requires --authorized --active and excludes other scan modes", file=sys.stderr)
+            return 2
+        try:
+            print(json.dumps(run_json_cases(
+                load_json_cases(args.check_json_cases), timeout=args.timeout,
+                verify_tls=not args.insecure), indent=2))
+            return 0
+        except (ValueError, OSError, URLError, json.JSONDecodeError):
+            print("error: JSON validation failed; check contract and connectivity", file=sys.stderr)
             return 2
     if args.quick:
         if args.from_inventory or not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
