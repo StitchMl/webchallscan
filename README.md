@@ -142,9 +142,10 @@ unsupported. No scanning request limits or target behavior change.
 The explicit `--session-file` loader reads at most 2 MB plus one byte
 from a regular local file. It refuses symlinks (where supported) and
 directories before decoding private cookies, preventing unbounded reads
-if an input changes between metadata inspection and opening. Only files inside the current working directory (or a subdirectory)
-are accepted, so an untrusted CLI argument cannot read external secrets.
-Change into the session directory before importing. No session values
+if an input changes between metadata inspection and opening. Only simple `.json` filenames directly inside the current working
+directory are accepted, so an untrusted CLI argument cannot specify parent
+directories or access external secrets. Change into the directory
+containing the session file before importing. No session values
 are printed in errors.
 
 ### Session cookie input safety
