@@ -105,27 +105,57 @@ class _WebSocket:
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
+        if any(ord(char) < 33 or ord(char) > 126 for char in path):
+            self.close()
+            raise SessionCaptureError("invalid CDP WebSocket request path")
         request = (
             f"GET {path} HTTP/1.1\r\nHost: {parsed.netloc}\r\nUpgrade: websocket\r\n"
             f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
         )
-        self.sock.sendall(request.encode("ascii"))
-        response = self._read_headers()
-        if not response.startswith(b"HTTP/1.1 101"):
+        try:
+            self.sock.sendall(request.encode("ascii"))
+            response = self._read_headers()
+            lines = response.split(b"\r\n")
+            if not lines or not lines[0].startswith(b"HTTP/1.1 101 "):
+                raise SessionCaptureError("CDP WebSocket upgrade was rejected")
+            headers: dict[bytes, list[bytes]] = {}
+            for line in lines[1:]:
+                if not line:
+                    break
+                name, separator, value = line.partition(b":")
+                if not separator:
+                    raise SessionCaptureError("invalid CDP WebSocket upgrade headers")
+                headers.setdefault(name.strip().lower(), []).append(value.strip())
+
+            def tokens(name: bytes) -> set[bytes]:
+                return {token.strip().lower()
+                        for value in headers.get(name, [])
+                        for token in value.split(b",")}
+
+            if (b"websocket" not in tokens(b"upgrade")
+                    or b"upgrade" not in tokens(b"connection")):
+                raise SessionCaptureError("CDP WebSocket upgrade headers are incomplete")
+            expected = base64.b64encode(hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+            ).digest())  # NOSONAR: RFC 6455 requires SHA-1 for this handshake
+            accept = headers.get(b"sec-websocket-accept", [])
+            if len(accept) != 1 or accept[0] != expected:
+                raise SessionCaptureError("CDP WebSocket handshake validation failed")
+        except (OSError, UnicodeEncodeError, SessionCaptureError):
             self.close()
-            raise SessionCaptureError("CDP WebSocket upgrade was rejected")
-        expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest())  # NOSONAR: RFC 6455 WebSocket handshake mandates SHA-1 with this fixed GUID
-        if expected.lower() not in response.lower():
-            self.close()
-            raise SessionCaptureError("CDP WebSocket handshake validation failed")
+            raise
 
     def _read_headers(self) -> bytes:
+        # A single recv(4096) can consume the first WebSocket frame as well
+        # as the upgrade response, losing that frame. Read only through CRLFCRLF.
         data = bytearray()
-        while b"\r\n\r\n" not in data and len(data) < 65536:
-            chunk = self.sock.recv(4096)
+        while not data.endswith(b"\r\n\r\n") and len(data) < 65536:
+            chunk = self.sock.recv(1)
             if not chunk:
                 break
             data.extend(chunk)
+        if not data.endswith(b"\r\n\r\n"):
+            raise SessionCaptureError("CDP WebSocket upgrade headers are incomplete")
         return bytes(data)
 
     def _exact(self, size: int) -> bytes:
