@@ -9,14 +9,13 @@ import hashlib
 import json
 import ssl
 from pathlib import Path
-from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+from urllib.request import HTTPSHandler, Request, build_opener
+
+from .http_client import NoRedirect, read_bounded
 
 
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
+_NoRedirect = NoRedirect
 
 
 def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verify_tls: bool = True) -> dict:
@@ -24,15 +23,9 @@ def _digest_response(url: str, headers: dict[str, str], timeout: float, *, verif
     handlers = [_NoRedirect]
     if not verify_tls:
         handlers.append(HTTPSHandler(context=ssl._create_unverified_context()))  # NOSONAR: explicit --insecure opt-in
-    try:
-        with build_opener(*handlers).open(req, timeout=timeout) as res:
-            raw = res.read(65537)
-            status = res.status
-            typ = res.headers.get("Content-Type", "").split(";")[0].strip().lower()
-    except HTTPError as error:
-        raw = error.read(65537)
-        status = error.code
-        typ = error.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    response = read_bounded(build_opener(*handlers), req, timeout, 65537)
+    raw, status = response.body, response.status
+    typ = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
     if len(raw) > 65536:
         raise ValueError("response exceeds 64 KiB validation cap")
     return {"status": status, "content_type": typ,
