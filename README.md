@@ -47,6 +47,25 @@ the presentation. The JSON schema, underlying findings, privacy redaction,
 exit codes and request behavior are unchanged. `NO_COLOR` and non-interactive
 output are respected by `--color auto`.
 
+### Human-readable inventories and API audit results
+
+Non-scanner modes continue to output machine-readable JSON by default for
+compatibility with pipelines and saved inventories. Add `--human` to see an
+opt-in, color-aware summary instead. Large endpoint inventories show the first
+12 items with counts and an optional `--verbose` expansion.
+
+```bash
+webchallscan --authorized --import-burp history.xml --human --color always
+webchallscan --authorized --plan-inventory inventory.json --human
+webchallscan --authorized --validate-api-contract contract.json --human
+webchallscan --authorized --active --check-json-cases cases.json --human
+webchallscan --audit-jwt-file jwt.txt --human
+```
+
+`--human` does not alter requests, audit logic or the underlying report
+schemas. Leave it out when using `> results.json`. It cannot be combined
+with `--format json`; `--color never` disables all ANSI escapes.
+
 ### Current browser session
 
 For a normally opened Chrome or Edge window, load the bundled unpacked
