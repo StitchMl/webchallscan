@@ -260,7 +260,7 @@ To inspect scan traffic in Burp Suite Community, run `webchallscan https://chall
 - `--timeout 5`: per-request timeout.
 - `--session-wait 120`: extension capture timeout.
 - `--burp-procedure`: print a manual Burp Repeater procedure instead of the report.
-- `--insecure`: only for challenge servers with intentionally invalid TLS.
+- `--insecure`: only for challenge servers with intentionally invalid TLS; applies to scanner, `--validate-api-contract` and `--check-api-cases` (TLS verification remains enabled by default).
 - `NO_COLOR=1`: disable automatic ANSI color.
 
 ## Scope and interpretation
