@@ -61,6 +61,7 @@ def render_structured_text(result: dict, color: str = "auto",
         "jwt-audit-v1": "OFFLINE JWT AUDIT",
         "session-format-audit-v1": "SESSION FORMAT AUDIT",
         "burp-session-export-v1": "BURP SESSION EXPORT",
+        "source-map-audit-v1": "OFFLINE SOURCE MAP AUDIT",
     }
     label = schema.split("/", 1)[1]
     if label not in names:
@@ -146,6 +147,24 @@ def render_structured_text(result: dict, color: str = "auto",
             for key, count in sorted(categories.items()):
                 if type(count) is int:
                     output.append(f"  {safe(key, 48)}: {count}")
+    if label == "source-map-audit-v1":
+        for key, name in (("source_count", "Sources"),
+                          ("embedded_source_count", "Embedded source contents")):
+            if type(result.get(key)) is int:
+                output.append(f"{name}: {result[key]}")
+        extensions = result.get("extension_categories", {})
+        if isinstance(extensions, dict):
+            output.append(paint("SOURCE TYPES", "label"))
+            for key, count in sorted(extensions.items()):
+                if key in {"js", "jsx", "ts", "tsx", "vue", "mjs",
+                           "cjs", "css", "scss", "html", "other"} and type(count) is int:
+                    output.append(f"  {key}: {count}")
+        categories = limited(result.get("comment_hint_categories"))
+        if categories:
+            output.append(paint("COMMENT HINT CATEGORIES", "medium"))
+            for category in categories:
+                if category in {"TODO", "FIXME", "FLAG", "SECRET", "PASSWORD", "DEBUG"}:
+                    output.append("  " + category)
     if label == "burp-session-export-v1":
         output.append(paint("Sensitive session file created; keep it private.", "medium"))
 
