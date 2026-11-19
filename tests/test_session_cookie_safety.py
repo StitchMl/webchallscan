@@ -124,3 +124,13 @@ def test_session_file_rejects_explicit_external_path(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
     with pytest.raises(SessionCaptureError, match="working directory"):
         load_session_file(str(source))
+
+
+@pytest.mark.parametrize("name", [
+    "../other.json", "nested/safe.json", "./safe.json",
+    "bad name.json", "..json", "traverse%2f.json",
+])
+def test_session_file_rejects_unsafe_relative_name(tmp_path, monkeypatch, name):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SessionCaptureError):
+        load_session_file(name)
