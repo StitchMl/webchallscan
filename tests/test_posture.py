@@ -19,7 +19,7 @@ def test_valid_protective_headers_and_non_sensitive_output():
         "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
         "X-Content-Type-Options": "nosniff",
         "Strict-Transport-Security": "max-age=31536000",
-        "Set-Cookie": "session=TOPSECRET",
+        "Set-Cookie": "session=TOPSECRET; Secure; HttpOnly; SameSite=Lax",
         "Authorization": "Bearer PRIVATE",
     }
     out = inspect_response("GET", "/", "Document", 200, headers, True)
