@@ -674,3 +674,35 @@ def test_active_post_preserves_textarea_defaults_without_exceeding_request_budge
     assert ("csrf", "token-42") in confirmed[0].request_fields
     assert report.requests_sent <= 24
     assert report.pages_scanned == 1
+
+
+def test_form_parser_submits_only_checked_checkbox_and_radio_defaults():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed("""
+    <form method="post" action="/submit">
+      <input type="checkbox" name="optout" value="no">
+      <input type="checkbox" name="enabled" checked>
+      <input type="checkbox" name="mode" checked value="fast">
+      <input type="radio" name="plan" value="basic">
+      <input type="radio" name="plan" checked value="pro">
+      <input type="hidden" name="csrf" value="token-42">
+      <input type="text" name="cmd" value="default">
+    </form>
+    """)
+    assert parser.forms[0].inputs == [
+        ("enabled", "checkbox", "on"),
+        ("mode", "checkbox", "fast"),
+        ("plan", "radio", "pro"),
+        ("csrf", "hidden", "token-42"),
+        ("cmd", "text", "default"),
+    ]
+
+
+def test_checked_boolean_html_attribute_counts_as_selected():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed('<form><input type="radio" name="role" checked="false" value="admin"></form>')
+    assert parser.forms[0].inputs == [("role", "radio", "admin")]

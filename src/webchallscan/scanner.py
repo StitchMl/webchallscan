@@ -194,7 +194,14 @@ class PageParser(HTMLParser):
             self._textarea_text = []
             self._form.inputs.append((data["name"], "textarea", ""))
         elif name == "input" and self._form and data.get("name"):
-            self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
+            input_type = data.get("type", "text").lower()
+            if input_type in {"checkbox", "radio"}:
+                if not any(key.lower() == "checked" for key, _ in attrs):
+                    return
+                value = data.get("value", "on")
+            else:
+                value = data.get("value", "")
+            self._form.inputs.append((data["name"], input_type, value))
 
     def _add_anchor_link(self, name: str, data: dict[str, str]) -> None:
         if name == "a" or data.get("rel", "").lower() in {"canonical", "alternate"}:
