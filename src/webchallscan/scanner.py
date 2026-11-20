@@ -171,6 +171,8 @@ class PageParser(HTMLParser):
         self._option_selected = False
         self._option_text: list[str] = []
         self._option_open = False
+        self._textarea_index: int | None = None
+        self._textarea_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         data = {k.lower(): (v or "") for k, v in attrs}
@@ -187,7 +189,11 @@ class PageParser(HTMLParser):
             self._start_select(data)
         elif name == "option" and self._form and self._select_index is not None:
             self._add_option(attrs, data)
-        elif name in {"input", "textarea"} and self._form and data.get("name"):
+        elif name == "textarea" and self._form and data.get("name"):
+            self._textarea_index = len(self._form.inputs)
+            self._textarea_text = []
+            self._form.inputs.append((data["name"], "textarea", ""))
+        elif name == "input" and self._form and data.get("name"):
             self._form.inputs.append((data["name"], data.get("type", "text").lower(), data.get("value", "")))
 
     def _add_anchor_link(self, name: str, data: dict[str, str]) -> None:
@@ -239,6 +245,8 @@ class PageParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._select_index is not None:
             self._option_text.append(data)
+        if self._textarea_index is not None:
+            self._textarea_text.append(data)
 
     def handle_comment(self, data: str) -> None:
         if len(self.comment_hints) < len(COMMENT_HINTS):
@@ -246,7 +254,13 @@ class PageParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         name = tag.lower()
-        if name == "option":
+        if name == "textarea" and self._textarea_index is not None:
+            field_name, kind, _ = self._form.inputs[self._textarea_index]
+            self._form.inputs[self._textarea_index] = (
+                field_name, kind, "".join(self._textarea_text))
+            self._textarea_index = None
+            self._textarea_text = []
+        elif name == "option":
             self._finish_option()
         elif name == "select":
             self._finish_option()
@@ -255,6 +269,8 @@ class PageParser(HTMLParser):
             self._select_has_selected = False
         elif name == "form":
             self._finish_option()
+            self._textarea_index = None
+            self._textarea_text = []
             self._form = None
             self._select_index = None
 
