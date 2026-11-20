@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import ssl
 from collections import deque
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -10,16 +9,15 @@ from html.parser import HTMLParser
 from http.cookiejar import Cookie, CookieJar
 from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import (
-    HTTPCookieProcessor,
-    HTTPRedirectHandler,
-    HTTPSHandler,
-    ProxyHandler,
     Request,
     build_opener,
 )
 
-from .http_client import (SameOriginRedirectHandler, read_bounded,
-                          scanner_handlers, validate_loopback_proxy)
+from .http_client import (
+    read_bounded,
+    scanner_handlers,
+    validate_loopback_proxy,
+)
 from .jwt_audit import audit_jwt
 from .model import Finding, ScanReport, redact_url
 from .posture import inspect_response
@@ -169,6 +167,10 @@ class PageParser(HTMLParser):
         self._select_index: int | None = None
         self._select_has_option = False
         self._select_has_selected = False
+        self._option_value: str | None = None
+        self._option_selected = False
+        self._option_text: list[str] = []
+        self._option_open = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         data = {k.lower(): (v or "") for k, v in attrs}
@@ -202,30 +204,57 @@ class PageParser(HTMLParser):
         self._select_index = len(self._form.inputs)
         self._select_has_option = False
         self._select_has_selected = False
+        self._clear_option()
         self._form.inputs.append((data["name"], "select", ""))
 
     def _add_option(self, attrs: list[tuple[str, str | None]], data: dict[str, str]) -> None:
-        # Preserve the first option by default, or the first explicitly
-        # selected option. Do not confuse a selected="" attribute with
-        # the absence of the selected boolean attribute.
-        selected = any(key.lower() == "selected" for key, _ in attrs)
+        self._finish_option()
+        self._option_selected = any(key.lower() == "selected" for key, _ in attrs)
+        self._option_value = data["value"] if any(
+            key.lower() == "value" for key, _ in attrs) else None
+        self._option_text = []
+        self._option_open = True
+
+    def _finish_option(self) -> None:
+        if self._select_index is None or not self._option_open:
+            return
+        selected = self._option_selected
         if (selected and not self._select_has_selected) or (
                 not self._select_has_option and not self._select_has_selected):
+            value = self._option_value
+            if value is None:
+                value = " ".join("".join(self._option_text).split())
             name, kind, _ = self._form.inputs[self._select_index]
-            self._form.inputs[self._select_index] = (name, kind, data.get("value", ""))
+            self._form.inputs[self._select_index] = (name, kind, value)
         self._select_has_option = True
         self._select_has_selected |= selected
+        self._clear_option()
+
+    def _clear_option(self) -> None:
+        self._option_value = None
+        self._option_selected = False
+        self._option_text = []
+        self._option_open = False
+
+    def handle_data(self, data: str) -> None:
+        if self._select_index is not None:
+            self._option_text.append(data)
 
     def handle_comment(self, data: str) -> None:
         if len(self.comment_hints) < len(COMMENT_HINTS):
             self.comment_hints.update(_comment_keywords(data))
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "select":
+        name = tag.lower()
+        if name == "option":
+            self._finish_option()
+        elif name == "select":
+            self._finish_option()
             self._select_index = None
             self._select_has_option = False
             self._select_has_selected = False
-        elif tag.lower() == "form":
+        elif name == "form":
+            self._finish_option()
             self._form = None
             self._select_index = None
 
@@ -803,413 +832,4 @@ class Scanner:
                     vector=f"Inspect {method} response headers for {redact_url(response.url)}.",
                     patch="Restrict HTTP methods to those required by the application.",
                 ))
-        banners = [name for name in ("server", "x-powered-by")
-                   if name in response.headers]
-        if banners:
-            items.append(self._finding(
-                rule="WEB-TECH-BANNER-001", title="Technology banner header present",
-                severity="info", confidence="medium", url=response.url, method=method,
-                evidence="Technology banner header names: " + ", ".join(banners) +
-                         "; header values are omitted.",
-                vector=f"Inspect {method} response headers for {redact_url(response.url)}.",
-                patch="Avoid exposing unnecessary technology and version details.",
-            ))
-        return items
-
-    def _source_map_hints(self, response: Response) -> list[Finding]:
-        """Record same-origin JavaScript source-map references without fetching them."""
-        if response.status != 200:
-            return []
-        # Source maps are annotations, not proof that the map is accessible.
-        # Keep the map URL out of reports because it could carry query secrets.
-        hints = re.findall(
-            r"(?://[#@]\s*sourceMappingURL\s*=\s*([^\s*]+)|/\*#\s*sourceMappingURL\s*=\s*([^*\s]+))",
-            response.text,
-            re.I,
-        )
-        for line_hint, block_hint in hints:
-            candidate = line_hint or block_hint
-            if not candidate or candidate.startswith(("data:", "//", "\\\\")):
-                continue
-            try:
-                url = urljoin(response.url, candidate)
-                parsed = urlsplit(url)
-                if (parsed.scheme not in {"http", "https"} or not self._in_scope(url)
-                        or parsed.username or parsed.password):
-                    continue
-            except ValueError:
-                continue
-            return [self._finding(
-                rule="WEB-SOURCEMAP-HINT-001",
-                title="JavaScript source-map annotation observed",
-                severity="info", confidence="medium", url=response.url,
-                evidence="A JavaScript sourceMappingURL references a same-origin map; "
-                         "availability and source disclosure have not been tested.",
-                vector=f"Review the sourceMappingURL annotation in GET {redact_url(response.url)}.",
-                patch="Do not publish sensitive source maps or embedded credentials in production assets.",
-            )]
-        return []
-
-    @staticmethod
-    def _static_get_routes(source: str) -> list[str]:
-        """Find literal GET routes in scripts without evaluating JavaScript.
-
-        Dynamic expressions, POST requests and template strings are excluded.
-        These are discovery hints, not evidence of vulnerabilities.
-        """
-        patterns = (
-            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*\)""",
-            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*method\s*:\s*['"]GET['"]\s*\}\s*\)""",
-            r"""\baxios\.get\s*\(\s*['"]([^'"]+)['"]""",
-            r"""\$\.(?:get|getJSON)\s*\(\s*['"]([^'"]+)['"]""",
-            r"""\$\.ajax\s*\(\s*\{\s*url\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:method|type)\s*:\s*['"]GET['"]""",
-            r"""\baxios\s*\(\s*\{\s*method\s*:\s*['"]GET['"]\s*,\s*url\s*:\s*['"]([^'"]+)['"]""",
-            r"""\b(?:window\.)?open\s*\(\s*['"]GET['"]\s*,\s*['"]([^'"]+)['"]""",
-        )
-        routes: set[str] = set()
-        for pattern in patterns:
-            for found in re.findall(pattern, source, re.I):
-                if found.startswith(("/", "./", "../", "http://", "https://")) and not any(
-                    marker in found for marker in ("{", "}", "${", "\\")
-                ):
-                    routes.add(found)
-        return sorted(routes)
-
-    @staticmethod
-    def _static_api_hints(source: str) -> list[tuple[str, str]]:
-        """Catalog literal API route hints; do not enqueue non-GET methods."""
-        source = source[:MAX_BODY]
-        routes: set[tuple[str, str]] = set()
-        for method, path in re.findall(
-            r"""\baxios\.(post|put|patch|delete)\s*\(\s*['"]([^'"]+)['"]""",
-            source, re.I,
-        ):
-            routes.add((method.upper(), path))
-        for path, method in re.findall(
-            r"""\bfetch\s*\(\s*['"]([^'"]+)['"]\s*,\s*\{\s*method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
-            source, re.I,
-        ):
-            routes.add((method.upper(), path))
-        for path, method in re.findall(
-            r"""\$\.ajax\s*\(\s*\{\s*url\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:method|type)\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
-            source, re.I,
-        ):
-            routes.add((method.upper(), path))
-        # Accept both key orders in bounded, flat axios/jQuery config objects.
-        # Only annotate methods; these hints never become active requests.
-        configs = re.findall(
-            r"""(?:\baxios(?:\.request)?|\$\.ajax)\s*\(\s*\{([^{}]{1,320})\}""",
-            source, re.I,
-        )
-        for options in configs[:100]:
-            method = re.search(
-                r"""(?:^|,)\s*(?:method|type)\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
-                options, re.I,
-            )
-            url = re.search(
-                r"""(?:^|,)\s*url\s*:\s*['"]([^'"]{1,256})['"]\s*(?=,|$)""",
-                options, re.I,
-            )
-            if method and url:
-                routes.add((method.group(1).upper(), url.group(1)))
-        # fetch() may include flat options before its method declaration.
-        for path, options in re.findall(
-            r"""\bfetch\s*\(\s*['"]([^'"]{1,256})['"]\s*,\s*\{([^{}]{1,320})\}""",
-            source, re.I,
-        )[:100]:
-            method = re.search(
-                r"""(?:^|,)\s*method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]""",
-                options, re.I,
-            )
-            if method:
-                routes.add((method.group(1).upper(), path))
-        for path in re.findall(
-            r"""['"](/(?:api|v[1-9]\d*|admin|internal)/[^'"\s]{0,160})['"]""",
-            source, re.I | re.A,
-        ):
-            if not any(found == path for _, found in routes):
-                routes.add(("UNKNOWN", path))
-        return sorted((method, path) for method, path in routes
-                      if (path.startswith(("/", "./", "../", "http://", "https://"))
-                          and not path.startswith("//")
-                          and not any(ch in path for ch in ("{", "}", "\\", "\r", "\n"))))[:20]
-
-    def _js_api_findings(self, response: Response) -> list[Finding]:
-        if response.status != 200:
-            return []
-        out = []
-        for method, path in self._static_api_hints(response.text):
-            try:
-                absolute = urljoin(response.url, path)
-                parsed = urlsplit(absolute)
-                if (not self._in_scope(absolute) or parsed.username or parsed.password
-                        or parsed.scheme not in {"http", "https"}):
-                    continue
-            except ValueError:
-                continue
-            out.append(self._finding(
-                rule="WEB-JS-API-HINT-001",
-                title="Static JavaScript API route hint",
-                severity="info", confidence="low", url=absolute,
-                method=method, evidence=(f"Literal {method} API route annotation; "
-                                         "reachability and authorization have not been checked."),
-                vector=f"Review the source in GET {redact_url(response.url)}; no request was sent to this route.",
-                patch="Apply server-side authorization and input validation on every API route.",
-            ))
-        return out
-
-    def _collect_metadata(self, report: ScanReport) -> None:
-        for method in ("HEAD", "OPTIONS"):
-            if self.requests_sent >= self.max_requests:
-                break
-            try:
-                metadata = self._request(self.target, method)
-                report.findings.extend(self._posture_findings(metadata, method))
-                report.findings.extend(self._metadata_findings(metadata, method))
-            except (OSError, RuntimeError, ValueError):
-                report.errors.append(f"{method} metadata request failed")
-
-    def _script_routes(self, response: Response, parser: PageParser,
-                       report: ScanReport) -> list:
-        # Examine inline scripts and bounded same-origin JavaScript files for
-        # literal GET routes. Never execute JavaScript or issue inferred POSTs.
-        routes = []
-        routes.extend(self._static_get_routes(response.text))
-        for script in parser.scripts[:10]:
-            script_url = self._clean_url(urljoin(response.url, script))
-            if not self._in_scope(script_url) or self.requests_sent >= self.max_requests:
-                continue
-            try:
-                js = self._request(script_url)
-                if len(js.text) <= MAX_BODY and js.status == 200:
-                    routes.extend(self._static_get_routes(js.text))
-                    report.findings.extend(self._source_map_hints(js))
-                    report.findings.extend(self._js_comment_hints(js))
-                    report.findings.extend(self._js_api_findings(js))
-            except (OSError, RuntimeError, ValueError):
-                continue
-        return routes
-
-    def _enqueue_routes(self, response: Response, routes: list, seen: set[str], queue: deque) -> None:
-        for href in routes:
-            try:
-                nxt = self._clean_url(urljoin(response.url, href))
-                parsed_nxt = urlsplit(nxt)
-                if parsed_nxt.scheme not in {"http", "https"}:
-                    continue
-                if self._in_scope(nxt) and nxt not in seen and nxt not in queue:
-                    queue.append(nxt)
-            except ValueError:
-                continue
-
-    def _crawl(self, report: ScanReport) -> tuple[int, list[Finding], int]:
-        queue = deque(dict.fromkeys((self.target, *self.inventory_urls)))
-        seen: set[str] = set()
-        successful_pages = 0
-        candidates: list[Finding] = []
-        discovered_routes = 0
-        while queue and len(seen) < self.max_pages and self.requests_sent < self.max_requests:
-            url = queue.popleft()
-            if url in seen:
-                continue
-            seen.add(url)
-            try:
-                response = self._request(url)
-            except (OSError, RuntimeError, ValueError):
-                report.errors.append(f"{redact_url(url)}: request failed")
-                continue
-            successful_pages += 1
-            parser = PageParser()
-            ctype = response.headers.get("content-type", "")
-            is_html = "html" in ctype or HTML_MARKER in response.text[:500].lower()
-            if is_html:
-                parser.feed(response.text)
-            self.observations[response.url] = self._observe(response, parser)
-            items = self._posture_findings(response) + self._passive_findings(response, parser)
-            report.findings.extend(items)
-            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001", "WEB-XSS-001"})
-            routes = list(parser.links)
-            if is_html:
-                routes.extend(self._script_routes(response, parser, report))
-            discovered_routes += len(routes)
-            self._enqueue_routes(response, routes, seen, queue)
-        return successful_pages, candidates, discovered_routes
-
-    def _run_active_probes(self, report: ScanReport, candidates: list[Finding]) -> None:
-        probe_priority = {
-            "WEB-CMDI-001": 0,
-            "WEB-SSTI-001": 1,
-            "WEB-SQLI-001": 2,
-            "WEB-FILE-001": 3,
-            "WEB-REDIR-001": 4,
-            "WEB-XSS-001": 5,
-        }
-        for finding in sorted(candidates, key=lambda item: (
-                probe_priority.get(item.rule, 9), item.url, item.parameter, item.id)):
-            if self.requests_sent + 2 > self.max_requests:
-                break
-            try:
-                confirmed = self._active_probe(finding)
-                if confirmed:
-                    report.findings.append(confirmed)
-            except (OSError, RuntimeError, ValueError):
-                report.errors.append(f"active {redact_url(finding.url)}#{finding.parameter}: request failed")
-
-    def _run_nosql_reviews(self, report: ScanReport, candidates: list[Finding]) -> None:
-        reviewed: set[tuple[str, str]] = set()
-        for finding in candidates:
-            if finding.method != "GET" or finding.rule != "WEB-SQLI-001":
-                continue
-            key = (finding.url, finding.parameter)
-            if key in reviewed:
-                continue
-            reviewed.add(key)
-            if len(reviewed) > 3 or self.requests_sent + 4 > self.max_requests:
-                break
-            try:
-                review = self._nosql_query_review(finding)
-                if review:
-                    report.findings.append(review)
-            except (OSError, RuntimeError, ValueError):
-                report.errors.append(
-                    f"noSQL review {redact_url(finding.url)}: request failed")
-
-    def scan(self) -> ScanReport:
-        report = ScanReport(self.target, self.active, profiles=(self.profile,),
-                            session_source=self.session.source if self.session else "none")
-        self._collect_metadata(report)
-        successful_pages, candidates, discovered_routes = self._crawl(report)
-        if self.active:
-            self._run_active_probes(report, candidates)
-        if self.inventory_urls:
-            report.coverage.append(
-                f"Seeded {len(self.inventory_urls)} GET endpoint(s) from a redacted inventory; "
-                "all requests remain subject to normal scan budgets."
-            )
-        if self.active and self.nosql_query:
-            self._run_nosql_reviews(report, candidates)
-        if discovered_routes == 0 and not self.inventory_urls:
-            report.coverage.append(
-                "No navigable links, GET form actions or literal script GET routes were discovered. "
-                "This HTTP-only scanner cannot execute JavaScript or observe live XHR/fetch traffic."
-            )
-        if not candidates:
-            report.coverage.append(
-                "No eligible query or form parameters were found for active injection probes; "
-                "zero findings does not establish that the application is secure."
-            )
-        unique = {item.id: item for item in report.findings}
-        severity = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        report.findings = sorted(unique.values(), key=lambda f: (severity.get(f.severity, 9), f.url, f.rule, f.parameter, f.id))
-        report.pages_scanned = successful_pages
-        report.requests_sent = self.requests_sent
-        return report
-
-
-def scan_profiles(target: str, *, profiles: tuple[str, ...] = ("desktop", "mobile"),
-                  active: bool = False, max_pages: int = 20, timeout: float = 5.0,
-                  max_requests: int = 80, verify_tls: bool = True,
-                  sessions: dict[str, BrowserSession] | None = None,
-                  proxy: str | None = None,
-                  inventory_urls: tuple[str, ...] = (),
-                  ssti_alternates: bool = False,
-                  nosql_query: bool = False) -> ScanReport:
-    """Run isolated profile scans and combine results in stable order."""
-    if not profiles or any(profile not in PROFILES for profile in profiles):
-        raise ValueError("profiles must contain desktop and/or mobile")
-    reports: list[ScanReport] = []
-    scanners: dict[str, Scanner] = {}
-    for profile in profiles:
-        scanner = Scanner(target, active=active, max_pages=max_pages, timeout=timeout,
-                          max_requests=max_requests, verify_tls=verify_tls, profile=profile,
-                          session=(sessions or {}).get(profile), proxy=proxy,
-                          inventory_urls=inventory_urls,
-                          ssti_alternates=ssti_alternates,
-                          nosql_query=nosql_query)
-        scanners[profile] = scanner
-        reports.append(scanner.scan())
-    combined = ScanReport(
-        target=reports[0].target,
-        active=active,
-        pages_scanned=sum(report.pages_scanned for report in reports),
-        requests_sent=sum(report.requests_sent for report in reports),
-        findings=[finding for report in reports for finding in report.findings],
-        errors=[f"{profile}: {error}" for profile, report in zip(profiles, reports, strict=False) for error in report.errors],
-        coverage=[f"{profile}: {note}" for profile, report in zip(profiles, reports, strict=False) for note in report.coverage],
-        profiles=profiles,
-        session_source=next((report.session_source for report in reports if report.session_source != "none"), "none"),
-    )
-    if len(profiles) == 2:
-        combined.findings.extend(_profile_differences(scanners[profiles[0]], scanners[profiles[1]], reports))
-    severity = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-    unique = {finding.id: finding for finding in combined.findings}
-    combined.findings = sorted(unique.values(), key=lambda finding: (
-        severity.get(finding.severity, 9), finding.url, finding.rule,
-        finding.profile, finding.parameter, finding.id,
-    ))
-    return combined
-
-
-def _observation_differences(first: Scanner, second: Scanner, url: str) -> list[str]:
-    left = first.observations.get(url)
-    right = second.observations.get(url)
-    if left is None or right is None:
-        return [f"page visible only to {first.profile if right is None else second.profile}"]
-    differences: list[str] = []
-    if left.status != right.status:
-        differences.append(f"status {first.profile}={left.status}, {second.profile}={right.status}")
-    if (left.body_length, left.body_sha256) != (right.body_length, right.body_sha256):
-        differences.append(
-            f"body {first.profile}=len:{left.body_length},sha256:{left.body_sha256[:12]}; "
-            f"{second.profile}=len:{right.body_length},sha256:{right.body_sha256[:12]}"
-        )
-    if left.forms != right.forms:
-        differences.append(f"form signatures differ ({len(left.forms)} vs {len(right.forms)})")
-    if left.parameters != right.parameters:
-        differences.append(
-            f"parameters {first.profile}={list(left.parameters)}, {second.profile}={list(right.parameters)}"
-        )
-    return differences
-
-
-def _profile_difference_finding(first: Scanner, second: Scanner, url: str,
-                                differences: list[str]) -> Finding:
-    return Finding(
-        rule="WEB-PROFILE-DIFF-001",
-        title="Desktop/mobile response surface differs",
-        severity="info",
-        confidence="high",
-        url=url,
-        profile="comparison",
-        evidence="; ".join(differences),
-        vector=(
-            f"Repeat GET {redact_url(url)} with Sec-CH-UA-Mobile {PROFILES[first.profile]['Sec-CH-UA-Mobile']} "
-            f"and {PROFILES[second.profile]['Sec-CH-UA-Mobile']}; inspect profile-tagged candidates."
-        ),
-        patch="Apply the same authentication, authorization, validation, and output encoding to every device-specific route.",
-        flag_path="A device-specific surface may expose a distinct route or input. Validate its profile-tagged findings before flag recovery.",
-    )
-
-
-def _profile_differences(first: Scanner, second: Scanner,
-                         reports: list[ScanReport]) -> list[Finding]:
-    out: list[Finding] = []
-    first_findings = {(item.url, item.rule, item.parameter) for item in reports[0].findings}
-    second_findings = {(item.url, item.rule, item.parameter) for item in reports[1].findings}
-    finding_difference = first_findings != second_findings
-    urls = sorted(set(first.observations) | set(second.observations))
-    for url in urls:
-        differences = _observation_differences(first, second, url)
-        left_rules = sorted((rule, parameter) for finding_url, rule, parameter in first_findings if finding_url == url)
-        right_rules = sorted((rule, parameter) for finding_url, rule, parameter in second_findings if finding_url == url)
-        if left_rules != right_rules:
-            differences.append(f"finding keys {first.profile}={left_rules}, {second.profile}={right_rules}")
-        if url == first.target and finding_difference:
-            left_only = sorted(first_findings - second_findings)[:8]
-            right_only = sorted(second_findings - first_findings)[:8]
-            differences.append(
-                f"profile-only findings {first.profile}={left_only}, {second.profile}={right_only}"
-            )
-        if differences:
-            out.append(_profile_difference_finding(first, second, url, differences))
-    return out
+       -vÛKh‘éì¶»§q«^t€É½ÕÑ•Ì¹…‘¡™½Õ¹¤(€€€€€€€É•ÑÕÉ¸Í½ÉÑ•¡É½ÕÑ•Ì¤((€€€ÍÑ…Ñ¥µ•Ñ¡½(€€€‘•˜}ÍÑ…Ñ¥}…Á¥}¡¥¹ÑÌ¡Í½ÕÉ”èÍÑÈ¤€´ø±¥ÍÑmÑÕÁ±•mÍÑÈ°ÍÑÉutè(€€€€€€€€ˆˆ‰…Ñ…±½œ±¥Ñ•É…°A$É½ÕÑ”¡¥¹ÑÌì‘¼¹½Ð•¹ÅÕ•Õ”¹½¸µPµ•Ñ¡½‘Ì¸ˆˆˆ(€€€€€€€Í½ÕÉ”€ôÍ½ÕÉ•lé5a}	=et(€€€€€€€É½ÕÑ•ÌèÍ•ÑmÑÕÁ±•mÍÑÈ°ÍÑÉut€ôÍ•Ð ¤(€€€€€€€™½Èµ•Ñ¡½°Á…Ñ ¥¸É”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆ‰q‰…á¥½Íp¸¡Á½ÍÑñÁÕÑñÁ…Ñ¡ñ‘•±•Ñ”¥qÌ©p¡qÌ©lœ‰t¡mxœ‰t¬¥lœ‰tˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$°(€€€€€€€€¤è(€€€€€€€€€€€É½ÕÑ•Ì¹…‘ ¡µ•Ñ¡½¹ÕÁÁ•È ¤°Á…Ñ ¤¤(€€€€€€€™½ÈÁ…Ñ °µ•Ñ¡½¥¸É”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆ‰q‰™•Ñ¡qÌ©p¡qÌ©lœ‰t¡mxœ‰t¬¥lœ‰uqÌ¨±qÌ©qíqÌ©µ•Ñ¡½‘qÌ¨éqÌ©lœ‰t¡A=MQñAUQñAQ!ñ1Q¥lœ‰tˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$°(€€€€€€€€¤è(€€€€€€€€€€€É½ÕÑ•Ì¹…‘ ¡µ•Ñ¡½¹ÕÁÁ•È ¤°Á…Ñ ¤¤(€€€€€€€™½ÈÁ…Ñ °µ•Ñ¡½¥¸É”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆ‰p‘p¹…©…áqÌ©p¡qÌ©qíqÌ©ÕÉ±qÌ¨éqÌ©lœ‰t¡mxœ‰t¬¥lœ‰uqÌ¨±qÌ¨ üéµ•Ñ¡½‘ñÑåÁ”¥qÌ¨éqÌ©lœ‰t¡A=MQñAUQñAQ!ñ1Q¥lœ‰tˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$°(€€€€€€€€¤è(€€€€€€€€€€€É½ÕÑ•Ì¹…‘ ¡µ•Ñ¡½¹ÕÁÁ•È ¤°Á…Ñ ¤¤(€€€€€€€€Œ•ÁÐ‰½Ñ ­•ä½É‘•ÉÌ¥¸‰½Õ¹‘•°™±…Ð…á¥½Ì½©EÕ•Éä½¹™¥œ½‰©•ÑÌ¸(€€€€€€€€Œ=¹±ä…¹¹½Ñ…Ñ”µ•Ñ¡½‘ÌìÑ¡•Í”¡¥¹ÑÌ¹•Ù•È‰•½µ”…Ñ¥Ù”É•ÅÕ•ÍÑÌ¸(€€€€€€€½¹™¥Ì€ôÉ”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆˆ üéq‰…á¥½Ì üép¹É•ÅÕ•ÍÐ¤ýñp‘p¹…©…à¥qÌ©p¡qÌ©qì¡myíõuìÄ°ÌÈÁô¥qôˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$°(€€€€€€€€¤(€€€€€€€™½È½ÁÑ¥½¹Ì¥¸½¹™¥ÍlèÄÀÁtè(€€€€€€€€€€€µ•Ñ¡½€ôÉ”¹Í•…É  (€€€€€€€€€€€€€€€Èˆˆˆ üéyð°¥qÌ¨ üéµ•Ñ¡½‘ñÑåÁ”¥qÌ¨éqÌ©lœ‰t¡A=MQñAUQñAQ!ñ1Q¥lœ‰tˆˆˆ°(€€€€€€€€€€€€€€€½ÁÑ¥½¹Ì°É”¹$°(€€€€€€€€€€€€¤(€€€€€€€€€€€ÕÉ°€ôÉ”¹Í•…É  (€€€€€€€€€€€€€€€Èˆˆˆ üéyð°¥qÌ©ÕÉ±qÌ¨éqÌ©lœ‰t¡mxœ‰uìÄ°ÈÔÙô¥lœ‰uqÌ¨ üô±ð¤ˆˆˆ°(€€€€€€€€€€€€€€€½ÁÑ¥½¹Ì°É”¹$°(€€€€€€€€€€€€¤(€€€€€€€€€€€¥˜µ•Ñ¡½…¹ÕÉ°è(€€€€€€€€€€€€€€€É½ÕÑ•Ì¹…‘ ¡µ•Ñ¡½¹É½ÕÀ Ä¤¹ÕÁÁ•È ¤°ÕÉ°¹É½ÕÀ Ä¤¤¤(€€€€€€€€Œ™•Ñ  ¤µ…ä¥¹±Õ‘”™±…Ð½ÁÑ¥½¹Ì‰•™½É”¥ÑÌµ•Ñ¡½‘•±…É…Ñ¥½¸¸(€€€€€€€™½ÈÁ…Ñ °½ÁÑ¥½¹Ì¥¸É”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆ‰q‰™•Ñ¡qÌ©p¡qÌ©lœ‰t¡mxœ‰uìÄ°ÈÔÙô¥lœ‰uqÌ¨±qÌ©qì¡myíõuìÄ°ÌÈÁô¥qôˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$°(€€€€€€€€¥lèÄÀÁtè(€€€€€€€€€€€µ•Ñ¡½€ôÉ”¹Í•…É  (€€€€€€€€€€€€€€€Èˆˆˆ üéyð°¥qÌ©µ•Ñ¡½‘qÌ¨éqÌ©lœ‰t¡A=MQñAUQñAQ!ñ1Q¥lœ‰tˆˆˆ°(€€€€€€€€€€€€€€€½ÁÑ¥½¹Ì°É”¹$°(€€€€€€€€€€€€¤(€€€€€€€€€€€¥˜µ•Ñ¡½è(€€€€€€€€€€€€€€€É½ÕÑ•Ì¹…‘ ¡µ•Ñ¡½¹É½ÕÀ Ä¤¹ÕÁÁ•È ¤°Á…Ñ ¤¤(€€€€€€€™½ÈÁ…Ñ ¥¸É”¹™¥¹‘…±° (€€€€€€€€€€€Èˆˆ‰lœ‰t ¼ üé…Á¥ñÙlÄ´åuq©ñ…‘µ¥¹ñ¥¹Ñ•É¹…°¤½mxœ‰qÍuìÀ°ÄØÁô¥lœ‰tˆˆˆ°(€€€€€€€€€€€Í½ÕÉ”°É”¹$ðÉ”¹°(€€€€€€€€¤è(€€€€€€€€€€€¥˜¹½Ð…¹ä¡™½Õ¹€ôôÁ…Ñ ™½È|°™½Õ¹¥¸É½ÕÑ•Ì¤è(€€€€€€€€€€€€€€€É½ÕÑ•Ì¹…‘  ‰U9-9=]8ˆ°Á…Ñ ¤¤(€€€€€€€É•ÑÕÉ¸Í½ÉÑ• ¡µ•Ñ¡½°Á…Ñ ¤™½Èµ•Ñ¡½°Á…Ñ ¥¸É½ÕÑ•Ì(€€€€€€€€€€€€€€€€€€€€€¥˜€¡Á…Ñ ¹ÍÑ…ÉÑÍÝ¥Ñ   ˆ¼ˆ°€ˆ¸¼ˆ°€ˆ¸¸¼ˆ°€‰¡ÑÑÀè¼¼ˆ°€‰¡ÑÑÁÌè¼¼ˆ¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€…¹¹½ÐÁ…Ñ ¹ÍÑ…ÉÑÍÝ¥Ñ  ˆ¼¼ˆ¤(€€€€€€€€€€€€€€€€€€€€€€€€€…¹¹½Ð…¹ä¡ ¥¸Á…Ñ ™½È ¥¸€ ‰ìˆ°€‰ôˆ°€‰qpˆ°€‰qÈˆ°€‰q¸ˆ¤¤¤¥lèÈÁt((€€€‘•˜}©Í}…Á¥}™¥¹‘¥¹Ì¡Í•±˜°É•ÍÁ½¹Í”èI•ÍÁ½¹Í”¤€´ø±¥ÍÑm¥¹‘¥¹tè(€€€€€€€¥˜É•ÍÁ½¹Í”¹ÍÑ…ÑÕÌ€„ô€ÈÀÀè(€€€€€€€€€€€É•ÑÕÉ¸mt(€€€€€€€½ÕÐ€ômt(€€€€€€€™½Èµ•Ñ¡½°Á…Ñ ¥¸Í•±˜¹}ÍÑ…Ñ¥}…Á¥}¡¥¹ÑÌ¡É•ÍÁ½¹Í”¹Ñ•áÐ¤è(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€…‰Í½±ÕÑ”€ôÕÉ±©½¥¸¡É•ÍÁ½¹Í”¹ÕÉ°°Á…Ñ ¤(€€€€€€€€€€€€€€€Á…ÉÍ•€ôÕÉ±ÍÁ±¥Ð¡…‰Í½±ÕÑ”¤(€€€€€€€€€€€€€€€¥˜€¡¹½ÐÍ•±˜¹}¥¹}Í½Á”¡…‰Í½±ÕÑ”¤½ÈÁ…ÉÍ•¹ÕÍ•É¹…µ”½ÈÁ…ÉÍ•¹Á…ÍÍÝ½É(€€€€€€€€€€€€€€€€€€€€€€€½ÈÁ…ÉÍ•¹Í¡•µ”¹½Ð¥¸ì‰¡ÑÑÀˆ°€‰¡ÑÑÁÌ‰ô¤è(€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€•á•ÁÐY…±Õ•ÉÉ½Èè(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€½ÕÐ¹…ÁÁ•¹¡Í•±˜¹}™¥¹‘¥¹œ (€€€€€€€€€€€€€€€ÉÕ±”ô‰]µ)LµA$µ!%9P´ÀÀÄˆ°(€€€€€€€€€€€€€€€Ñ¥Ñ±”ô‰MÑ…Ñ¥Œ)…Ù…MÉ¥ÁÐA$É½ÕÑ”¡¥¹Ðˆ°(€€€€€€€€€€€€€€€Í•Ù•É¥Ñäô‰¥¹™¼ˆ°½¹™¥‘•¹”ô‰±½Üˆ°ÕÉ°õ…‰Í½±ÕÑ”°(€€€€€€€€€€€€€€€µ•Ñ¡½õµ•Ñ¡½°•Ù¥‘•¹”ô¡˜‰1¥Ñ•É…°íµ•Ñ¡½‘ôA$É½ÕÑ”…¹¹½Ñ…Ñ¥½¸ì€ˆ(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰É•…¡…‰¥±¥Ñä…¹…ÕÑ¡½É¥é…Ñ¥½¸¡…Ù”¹½Ð‰••¸¡•­•¸ˆ¤°(€€€€€€€€€€€€€€€Ù•Ñ½Èõ˜‰I•Ù¥•ÜÑ¡”Í½ÕÉ”¥¸PíÉ•‘…Ñ}ÕÉ°¡É•ÍÁ½¹Í”¹ÕÉ°¥ôì¹¼É•ÅÕ•ÍÐÝ…ÌÍ•¹ÐÑ¼Ñ¡¥ÌÉ½ÕÑ”¸ˆ°(€€€€€€€€€€€€€€€Á…Ñ ô‰ÁÁ±äÍ•ÉÙ•ÈµÍ¥‘”…ÕÑ¡½É¥é…Ñ¥½¸…¹¥¹ÁÕÐÙ…±¥‘…Ñ¥½¸½¸•Ù•ÉäA$É½ÕÑ”¸ˆ°(€€€€€€€€€€€€¤¤(€€€€€€€É•ÑÕÉ¸½ÕÐ((€€€‘•˜}½±±•Ñ}µ•Ñ…‘…Ñ„¡Í•±˜°É•Á½ÉÐèM…¹I•Á½ÉÐ¤€´ø9½¹”è(€€€€€€€™½Èµ•Ñ¡½¥¸€ ‰!ˆ°€‰=AQ%=9Lˆ¤è(€€€€€€€€€€€¥˜Í•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð€øôÍ•±˜¹µ…á}É•ÅÕ•ÍÑÌè(€€€€€€€€€€€€€€€‰É•…¬(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€µ•Ñ…‘…Ñ„€ôÍ•±˜¹}É•ÅÕ•ÍÐ¡Í•±˜¹Ñ…É•Ð°µ•Ñ¡½¤(€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡Í•±˜¹}Á½ÍÑÕÉ•}™¥¹‘¥¹Ì¡µ•Ñ…‘…Ñ„°µ•Ñ¡½¤¤(€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡Í•±˜¹}µ•Ñ…‘…Ñ…}™¥¹‘¥¹Ì¡µ•Ñ…‘…Ñ„°µ•Ñ¡½¤¤(€€€€€€€€€€€•á•ÁÐ€¡=MÉÉ½È°IÕ¹Ñ¥µ•ÉÉ½È°Y…±Õ•ÉÉ½È¤è(€€€€€€€€€€€€€€€É•Á½ÉÐ¹•ÉÉ½ÉÌ¹…ÁÁ•¹¡˜‰íµ•Ñ¡½‘ôµ•Ñ…‘…Ñ„É•ÅÕ•ÍÐ™…¥±•ˆ¤((€€€‘•˜}ÍÉ¥ÁÑ}É½ÕÑ•Ì¡Í•±˜°É•ÍÁ½¹Í”èI•ÍÁ½¹Í”°Á…ÉÍ•ÈèA…•A…ÉÍ•È°(€€€€€€€€€€€€€€€€€€€€€€É•Á½ÉÐèM…¹I•Á½ÉÐ¤€´ø±¥ÍÐè(€€€€€€€€Œá…µ¥¹”¥¹±¥¹”ÍÉ¥ÁÑÌ…¹‰½Õ¹‘•Í…µ”µ½É¥¥¸)…Ù…MÉ¥ÁÐ™¥±•Ì™½È(€€€€€€€€Œ±¥Ñ•É…°PÉ½ÕÑ•Ì¸9•Ù•È•á•ÕÑ”)…Ù…MÉ¥ÁÐ½È¥ÍÍÕ”¥¹™•ÉÉ•A=MQÌ¸(€€€€€€€É½ÕÑ•Ì€ômt(€€€€€€€É½ÕÑ•Ì¹•áÑ•¹¡Í•±˜¹}ÍÑ…Ñ¥}•Ñ}É½ÕÑ•Ì¡É•ÍÁ½¹Í”¹Ñ•áÐ¤¤(€€€€€€€™½ÈÍÉ¥ÁÐ¥¸Á…ÉÍ•È¹ÍÉ¥ÁÑÍlèÄÁtè(€€€€€€€€€€€ÍÉ¥ÁÑ}ÕÉ°€ôÍ•±˜¹}±•…¹}ÕÉ°¡ÕÉ±©½¥¸¡É•ÍÁ½¹Í”¹ÕÉ°°ÍÉ¥ÁÐ¤¤(€€€€€€€€€€€¥˜¹½ÐÍ•±˜¹}¥¹}Í½Á”¡ÍÉ¥ÁÑ}ÕÉ°¤½ÈÍ•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð€øôÍ•±˜¹µ…á}É•ÅÕ•ÍÑÌè(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€©Ì€ôÍ•±˜¹}É•ÅÕ•ÍÐ¡ÍÉ¥ÁÑ}ÕÉ°¤(€€€€€€€€€€€€€€€¥˜±•¸¡©Ì¹Ñ•áÐ¤€ðô5a}	=d…¹©Ì¹ÍÑ…ÑÕÌ€ôô€ÈÀÀè(€€€€€€€€€€€€€€€€€€€É½ÕÑ•Ì¹•áÑ•¹¡Í•±˜¹}ÍÑ…Ñ¥}•Ñ}É½ÕÑ•Ì¡©Ì¹Ñ•áÐ¤¤(€€€€€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡Í•±˜¹}Í½ÕÉ•}µ…Á}¡¥¹ÑÌ¡©Ì¤¤(€€€€€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡Í•±˜¹}©Í}½µµ•¹Ñ}¡¥¹ÑÌ¡©Ì¤¤(€€€€€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡Í•±˜¹}©Í}…Á¥}™¥¹‘¥¹Ì¡©Ì¤¤(€€€€€€€€€€€•á•ÁÐ€¡=MÉÉ½È°IÕ¹Ñ¥µ•ÉÉ½È°Y…±Õ•ÉÉ½È¤è(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€É•ÑÕÉ¸É½ÕÑ•Ì((€€€‘•˜}•¹ÅÕ•Õ•}É½ÕÑ•Ì¡Í•±˜°É•ÍÁ½¹Í”èI•ÍÁ½¹Í”°É½ÕÑ•Ìè±¥ÍÐ°Í••¸èÍ•ÑmÍÑÉt°ÅÕ•Õ”è‘•ÅÕ”¤€´ø9½¹”è(€€€€€€€™½È¡É•˜¥¸É½ÕÑ•Ìè(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€¹áÐ€ôÍ•±˜¹}±•…¹}ÕÉ°¡ÕÉ±©½¥¸¡É•ÍÁ½¹Í”¹ÕÉ°°¡É•˜¤¤(€€€€€€€€€€€€€€€Á…ÉÍ•‘}¹áÐ€ôÕÉ±ÍÁ±¥Ð¡¹áÐ¤(€€€€€€€€€€€€€€€¥˜Á…ÉÍ•‘}¹áÐ¹Í¡•µ”¹½Ð¥¸ì‰¡ÑÑÀˆ°€‰¡ÑÑÁÌ‰ôè(€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€€€€€¥˜Í•±˜¹}¥¹}Í½Á”¡¹áÐ¤…¹¹áÐ¹½Ð¥¸Í••¸…¹¹áÐ¹½Ð¥¸ÅÕ•Õ”è(€€€€€€€€€€€€€€€€€€€ÅÕ•Õ”¹…ÁÁ•¹¡¹áÐ¤(€€€€€€€€€€€•á•ÁÐY…±Õ•ÉÉ½Èè(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”((€€€‘•˜}É…Ý°¡Í•±˜°É•Á½ÉÐèM…¹I•Á½ÉÐ¤€´øÑÕÁ±•m¥¹Ð°±¥ÍÑm¥¹‘¥¹t°¥¹Ñtè(€€€€€€€ÅÕ•Õ”€ô‘•ÅÕ”¡‘¥Ð¹™É½µ­•åÌ ¡Í•±˜¹Ñ…É•Ð°€©Í•±˜¹¥¹Ù•¹Ñ½Éå}ÕÉ±Ì¤¤¤(€€€€€€€Í••¸èÍ•ÑmÍÑÉt€ôÍ•Ð ¤(€€€€€€€ÍÕ•ÍÍ™Õ±}Á…•Ì€ô€À(€€€€€€€…¹‘¥‘…Ñ•Ìè±¥ÍÑm¥¹‘¥¹t€ômt(€€€€€€€‘¥Í½Ù•É•‘}É½ÕÑ•Ì€ô€À(€€€€€€€Ý¡¥±”ÅÕ•Õ”…¹±•¸¡Í••¸¤€ðÍ•±˜¹µ…á}Á…•Ì…¹Í•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð€ðÍ•±˜¹µ…á}É•ÅÕ•ÍÑÌè(€€€€€€€€€€€ÕÉ°€ôÅÕ•Õ”¹Á½Á±•™Ð ¤(€€€€€€€€€€€¥˜ÕÉ°¥¸Í••¸è(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€Í••¸¹…‘¡ÕÉ°¤(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€É•ÍÁ½¹Í”€ôÍ•±˜¹}É•ÅÕ•ÍÐ¡ÕÉ°¤(€€€€€€€€€€€•á•ÁÐ€¡=MÉÉ½È°IÕ¹Ñ¥µ•ÉÉ½È°Y…±Õ•ÉÉ½È¤è(€€€€€€€€€€€€€€€É•Á½ÉÐ¹•ÉÉ½ÉÌ¹…ÁÁ•¹¡˜‰íÉ•‘…Ñ}ÕÉ°¡ÕÉ°¥ôèÉ•ÅÕ•ÍÐ™…¥±•ˆ¤(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€ÍÕ•ÍÍ™Õ±}Á…•Ì€¬ô€Ä(€€€€€€€€€€€Á…ÉÍ•È€ôA…•A…ÉÍ•È ¤(€€€€€€€€€€€ÑåÁ”€ôÉ•ÍÁ½¹Í”¹¡•…‘•ÉÌ¹•Ð ‰½¹Ñ•¹ÐµÑåÁ”ˆ°€ˆˆ¤(€€€€€€€€€€€¥Í}¡Ñµ°€ô€‰¡Ñµ°ˆ¥¸ÑåÁ”½È!Q51}5I-H¥¸É•ÍÁ½¹Í”¹Ñ•áÑlèÔÀÁt¹±½Ý•È ¤(€€€€€€€€€€€¥˜¥Í}¡Ñµ°è(€€€€€€€€€€€€€€€Á…ÉÍ•È¹™••¡É•ÍÁ½¹Í”¹Ñ•áÐ¤(€€€€€€€€€€€Í•±˜¹½‰Í•ÉÙ…Ñ¥½¹ÍmÉ•ÍÁ½¹Í”¹ÕÉ±t€ôÍ•±˜¹}½‰Í•ÉÙ”¡É•ÍÁ½¹Í”°Á…ÉÍ•È¤(€€€€€€€€€€€¥Ñ•µÌ€ôÍ•±˜¹}Á½ÍÑÕÉ•}™¥¹‘¥¹Ì¡É•ÍÁ½¹Í”¤€¬Í•±˜¹}Á…ÍÍ¥Ù•}™¥¹‘¥¹Ì¡É•ÍÁ½¹Í”°Á…ÉÍ•È¤(€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹•áÑ•¹¡¥Ñ•µÌ¤(€€€€€€€€€€€…¹‘¥‘…Ñ•Ì¹•áÑ•¹¡¥Ñ•´™½È¥Ñ•´¥¸¥Ñ•µÌ¥˜¥Ñ•´¹ÉÕ±”¥¸ì‰]µME1$´ÀÀÄˆ°€‰]µMMQ$´ÀÀÄˆ°€‰]µ5$´ÀÀÄˆ°€‰]µ%1´ÀÀÄˆ°€‰]µI%H´ÀÀÄˆ°€‰]µaML´ÀÀÄ‰ô¤(€€€€€€€€€€€É½ÕÑ•Ì€ô±¥ÍÐ¡Á…ÉÍ•È¹±¥¹­Ì¤(€€€€€€€€€€€¥˜¥Í}¡Ñµ°è(€€€€€€€€€€€€€€€É½ÕÑ•Ì¹•áÑ•¹¡Í•±˜¹}ÍÉ¥ÁÑ}É½ÕÑ•Ì¡É•ÍÁ½¹Í”°Á…ÉÍ•È°É•Á½ÉÐ¤¤(€€€€€€€€€€€‘¥Í½Ù•É•‘}É½ÕÑ•Ì€¬ô±•¸¡É½ÕÑ•Ì¤(€€€€€€€€€€€Í•±˜¹}•¹ÅÕ•Õ•}É½ÕÑ•Ì¡É•ÍÁ½¹Í”°É½ÕÑ•Ì°Í••¸°ÅÕ•Õ”¤(€€€€€€€É•ÑÕÉ¸ÍÕ•ÍÍ™Õ±}Á…•Ì°…¹‘¥‘…Ñ•Ì°‘¥Í½Ù•É•‘}É½ÕÑ•Ì((€€€‘•˜}ÉÕ¹}…Ñ¥Ù•}ÁÉ½‰•Ì¡Í•±˜°É•Á½ÉÐèM…¹I•Á½ÉÐ°…¹‘¥‘…Ñ•Ìè±¥ÍÑm¥¹‘¥¹t¤€´ø9½¹”è(€€€€€€€ÁÉ½‰•}ÁÉ¥½É¥Ñä€ôì(€€€€€€€€€€€€‰]µ5$´ÀÀÄˆè€À°(€€€€€€€€€€€€‰]µMMQ$´ÀÀÄˆè€Ä°(€€€€€€€€€€€€‰]µME1$´ÀÀÄˆè€È°(€€€€€€€€€€€€‰]µ%1´ÀÀÄˆè€Ì°(€€€€€€€€€€€€‰]µI%H´ÀÀÄˆè€Ð°(€€€€€€€€€€€€‰]µaML´ÀÀÄˆè€Ô°(€€€€€€€ô(€€€€€€€™½È™¥¹‘¥¹œ¥¸Í½ÉÑ•¡…¹‘¥‘…Ñ•Ì°­•äõ±…µ‰‘„¥Ñ•´è€ (€€€€€€€€€€€€€€€ÁÉ½‰•}ÁÉ¥½É¥Ñä¹•Ð¡¥Ñ•´¹ÉÕ±”°€ä¤°¥Ñ•´¹ÕÉ°°¥Ñ•´¹Á…É…µ•Ñ•È°¥Ñ•´¹¥¤¤è(€€€€€€€€€€€¥˜Í•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð€¬€È€øÍ•±˜¹µ…á}É•ÅÕ•ÍÑÌè(€€€€€€€€€€€€€€€‰É•…¬(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€½¹™¥Éµ•€ôÍ•±˜¹}…Ñ¥Ù•}ÁÉ½‰”¡™¥¹‘¥¹œ¤(€€€€€€€€€€€€€€€¥˜½¹™¥Éµ•è(€€€€€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹…ÁÁ•¹¡½¹™¥Éµ•¤(€€€€€€€€€€€•á•ÁÐ€¡=MÉÉ½È°IÕ¹Ñ¥µ•ÉÉ½È°Y…±Õ•ÉÉ½È¤è(€€€€€€€€€€€€€€€É•Á½ÉÐ¹•ÉÉ½ÉÌ¹…ÁÁ•¹¡˜‰…Ñ¥Ù”íÉ•‘…Ñ}ÕÉ°¡™¥¹‘¥¹œ¹ÕÉ°¥ôí™¥¹‘¥¹œ¹Á…É…µ•Ñ•ÉôèÉ•ÅÕ•ÍÐ™…¥±•ˆ¤((€€€‘•˜}ÉÕ¹}¹½ÍÅ±}É•Ù¥•ÝÌ¡Í•±˜°É•Á½ÉÐèM…¹I•Á½ÉÐ°…¹‘¥‘…Ñ•Ìè±¥ÍÑm¥¹‘¥¹t¤€´ø9½¹”è(€€€€€€€É•Ù¥•Ý•èÍ•ÑmÑÕÁ±•mÍÑÈ°ÍÑÉut€ôÍ•Ð ¤(€€€€€€€™½È™¥¹‘¥¹œ¥¸…¹‘¥‘…Ñ•Ìè(€€€€€€€€€€€¥˜™¥¹‘¥¹œ¹µ•Ñ¡½€„ô€‰Pˆ½È™¥¹‘¥¹œ¹ÉÕ±”€„ô€‰]µME1$´ÀÀÄˆè(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€­•ä€ô€¡™¥¹‘¥¹œ¹ÕÉ°°™¥¹‘¥¹œ¹Á…É…µ•Ñ•È¤(€€€€€€€€€€€¥˜­•ä¥¸É•Ù¥•Ý•è(€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”(€€€€€€€€€€€É•Ù¥•Ý•¹…‘¡­•ä¤(€€€€€€€€€€€¥˜±•¸¡É•Ù¥•Ý•¤€ø€Ì½ÈÍ•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð€¬€Ð€øÍ•±˜¹µ…á}É•ÅÕ•ÍÑÌè(€€€€€€€€€€€€€€€‰É•…¬(€€€€€€€€€€€ÑÉäè(€€€€€€€€€€€€€€€É•Ù¥•Ü€ôÍ•±˜¹}¹½ÍÅ±}ÅÕ•Éå}É•Ù¥•Ü¡™¥¹‘¥¹œ¤(€€€€€€€€€€€€€€€¥˜É•Ù¥•Üè(€€€€€€€€€€€€€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì¹…ÁÁ•¹¡É•Ù¥•Ü¤(€€€€€€€€€€€•á•ÁÐ€¡=MÉÉ½È°IÕ¹Ñ¥µ•ÉÉ½È°Y…±Õ•ÉÉ½È¤è(€€€€€€€€€€€€€€€É•Á½ÉÐ¹•ÉÉ½ÉÌ¹…ÁÁ•¹ (€€€€€€€€€€€€€€€€€€€˜‰¹½ME0É•Ù¥•ÜíÉ•‘…Ñ}ÕÉ°¡™¥¹‘¥¹œ¹ÕÉ°¥ôèÉ•ÅÕ•ÍÐ™…¥±•ˆ¤((€€€‘•˜Í…¸¡Í•±˜¤€´øM…¹I•Á½ÉÐè(€€€€€€€É•Á½ÉÐ€ôM…¹I•Á½ÉÐ¡Í•±˜¹Ñ…É•Ð°Í•±˜¹…Ñ¥Ù”°ÁÉ½™¥±•Ìô¡Í•±˜¹ÁÉ½™¥±”°¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹}Í½ÕÉ”õÍ•±˜¹Í•ÍÍ¥½¸¹Í½ÕÉ”¥˜Í•±˜¹Í•ÍÍ¥½¸•±Í”€‰¹½¹”ˆ¤(€€€€€€€Í•±˜¹}½±±•Ñ}µ•Ñ…‘…Ñ„¡É•Á½ÉÐ¤(€€€€€€€ÍÕ•ÍÍ™Õ±}Á…•Ì°…¹‘¥‘…Ñ•Ì°‘¥Í½Ù•É•‘}É½ÕÑ•Ì€ôÍ•±˜¹}É…Ý°¡É•Á½ÉÐ¤(€€€€€€€¥˜Í•±˜¹…Ñ¥Ù”è(€€€€€€€€€€€Í•±˜¹}ÉÕ¹}…Ñ¥Ù•}ÁÉ½‰•Ì¡É•Á½ÉÐ°…¹‘¥‘…Ñ•Ì¤(€€€€€€€¥˜Í•±˜¹¥¹Ù•¹Ñ½Éå}ÕÉ±Ìè(€€€€€€€€€€€É•Á½ÉÐ¹½Ù•É…”¹…ÁÁ•¹ (€€€€€€€€€€€€€€€˜‰M••‘•í±•¸¡Í•±˜¹¥¹Ù•¹Ñ½Éå}ÕÉ±Ì¥ôP•¹‘Á½¥¹Ð¡Ì¤™É½´„É•‘…Ñ•¥¹Ù•¹Ñ½Éäì€ˆ(€€€€€€€€€€€€€€€€‰…±°É•ÅÕ•ÍÑÌÉ•µ…¥¸ÍÕ‰©•ÐÑ¼¹½Éµ…°Í…¸‰Õ‘•ÑÌ¸ˆ(€€€€€€€€€€€€¤(€€€€€€€¥˜Í•±˜¹…Ñ¥Ù”…¹Í•±˜¹¹½ÍÅ±}ÅÕ•Éäè(€€€€€€€€€€€Í•±˜¹}ÉÕ¹}¹½ÍÅ±}É•Ù¥•ÝÌ¡É•Á½ÉÐ°…¹‘¥‘…Ñ•Ì¤(€€€€€€€¥˜‘¥Í½Ù•É•‘}É½ÕÑ•Ì€ôô€À…¹¹½ÐÍ•±˜¹¥¹Ù•¹Ñ½Éå}ÕÉ±Ìè(€€€€€€€€€€€É•Á½ÉÐ¹½Ù•É…”¹…ÁÁ•¹ (€€€€€€€€€€€€€€€€‰9¼¹…Ù¥…‰±”±¥¹­Ì°P™½É´…Ñ¥½¹Ì½È±¥Ñ•É…°ÍÉ¥ÁÐPÉ½ÕÑ•ÌÝ•É”‘¥Í½Ù•É•¸€ˆ(€€€€€€€€€€€€€€€€‰Q¡¥Ì!QQ@µ½¹±äÍ…¹¹•È…¹¹½Ð•á•ÕÑ”)…Ù…MÉ¥ÁÐ½È½‰Í•ÉÙ”±¥Ù”a!H½™•Ñ ÑÉ…™™¥Œ¸ˆ(€€€€€€€€€€€€¤(€€€€€€€¥˜¹½Ð…¹‘¥‘…Ñ•Ìè(€€€€€€€€€€€É•Á½ÉÐ¹½Ù•É…”¹…ÁÁ•¹ (€€€€€€€€€€€€€€€€‰9¼•±¥¥‰±”ÅÕ•Éä½È™½É´Á…É…µ•Ñ•ÉÌÝ•É”™½Õ¹™½È…Ñ¥Ù”¥¹©•Ñ¥½¸ÁÉ½‰•Ìì€ˆ(€€€€€€€€€€€€€€€€‰é•É¼™¥¹‘¥¹Ì‘½•Ì¹½Ð•ÍÑ…‰±¥Í Ñ¡…ÐÑ¡”…ÁÁ±¥…Ñ¥½¸¥ÌÍ•ÕÉ”¸ˆ(€€€€€€€€€€€€¤(€€€€€€€Õ¹¥ÅÕ”€ôí¥Ñ•´¹¥è¥Ñ•´™½È¥Ñ•´¥¸É•Á½ÉÐ¹™¥¹‘¥¹Íô(€€€€€€€Í•Ù•É¥Ñä€ôì‰É¥Ñ¥…°ˆè€À°€‰¡¥ ˆè€Ä°€‰µ•‘¥Õ´ˆè€È°€‰±½Üˆè€Ì°€‰¥¹™¼ˆè€Ñô(€€€€€€€É•Á½ÉÐ¹™¥¹‘¥¹Ì€ôÍ½ÉÑ•¡Õ¹¥ÅÕ”¹Ù…±Õ•Ì ¤°­•äõ±…µ‰‘„˜è€¡Í•Ù•É¥Ñä¹•Ð¡˜¹Í•Ù•É¥Ñä°€ä¤°˜¹ÕÉ°°˜¹ÉÕ±”°˜¹Á…É…µ•Ñ•È°˜¹¥¤¤(€€€€€€€É•Á½ÉÐ¹Á…•Í}Í…¹¹•€ôÍÕ•ÍÍ™Õ±}Á…•Ì(€€€€€€€É•Á½ÉÐ¹É•ÅÕ•ÍÑÍ}Í•¹Ð€ôÍ•±˜¹É•ÅÕ•ÍÑÍ}Í•¹Ð(€€€€€€€É•ÑÕÉ¸É•Á½ÉÐ(()‘•˜Í…¹}ÁÉ½™¥±•Ì¡Ñ…É•ÐèÍÑÈ°€¨°ÁÉ½™¥±•ÌèÑÕÁ±•mÍÑÈ°€¸¸¹t€ô€ ‰‘•Í­Ñ½Àˆ°€‰µ½‰¥±”ˆ¤°(€€€€€€€€€€€€€€€€€…Ñ¥Ù”è‰½½°€ô…±Í”°µ…á}Á…•Ìè¥¹Ð€ô€ÈÀ°Ñ¥µ•½ÕÐè™±½…Ð€ô€Ô¸À°(€€€€€€€€€€€€€€€€€µ…á}É•ÅÕ•ÍÑÌè¥¹Ð€ô€àÀ°Ù•É¥™å}Ñ±Ìè‰½½°€ôQÉÕ”°(€€€€€€€€€€€€€€€€€Í•ÍÍ¥½¹Ìè‘¥ÑmÍÑÈ°	É½ÝÍ•ÉM•ÍÍ¥½¹tð9½¹”€ô9½¹”°(€€€€€€€€€€€€€€€€€ÁÉ½áäèÍÑÈð9½¹”€ô9½¹”°(€€€€€€€€€€€€€€€€€¥¹Ù•¹Ñ½Éå}ÕÉ±ÌèÑÕÁ±•mÍÑÈ°€¸¸¹t€ô€ ¤°(€€€€€€€€€€€€€€€€€ÍÍÑ¥}…±Ñ•É¹…Ñ•Ìè‰½½°€ô…±Í”°(€€€€€€€€€€€€€€€€€¹½ÍÅ±}ÅÕ•Éäè‰½½°€ô…±Í”¤€´øM…¹I•Á½ÉÐè(€€€€ˆˆ‰IÕ¸¥Í½±…Ñ•ÁÉ½™¥±”Í…¹Ì…¹½µ‰¥¹”É•ÍÕ±ÑÌ¥¸ÍÑ…‰±”½É‘•È¸ˆˆˆ(€€€¥˜¹½ÐÁÉ½™¥±•Ì½È…¹ä¡ÁÉ½™¥±”¹½Ð¥¸AI=%1L™½ÈÁÉ½™¥±”¥¸ÁÉ½™¥±•Ì¤è(€€€€€€€É…¥Í”Y…±Õ•ÉÉ½È ‰ÁÉ½™¥±•ÌµÕÍÐ½¹Ñ…¥¸‘•Í­Ñ½À…¹½½Èµ½‰¥±”ˆ¤(€€€É•Á½ÉÑÌè±¥ÍÑmM…¹I•Á½ÉÑt€ômt(€€€Í…¹¹•ÉÌè‘¥ÑmÍÑÈ°M…¹¹•Ét€ôíô(€€€™½ÈÁÉ½™¥±”¥¸ÁÉ½™¥±•Ìè(€€€€€€€Í…¹¹•È€ôM…¹¹•È¡Ñ…É•Ð°…Ñ¥Ù”õ…Ñ¥Ù”°µ…á}Á…•Ìõµ…á}Á…•Ì°Ñ¥µ•½ÕÐõÑ¥µ•½ÕÐ°(€€€€€€€€€€€€€€€€€€€€€€€€€µ…á}É•ÅÕ•ÍÑÌõµ…á}É•ÅÕ•ÍÑÌ°Ù•É¥™å}Ñ±ÌõÙ•É¥™å}Ñ±Ì°ÁÉ½™¥±”õÁÉ½™¥±”°(€€€€€€€€€€€€€€€€€€€€€€€€€Í•ÍÍ¥½¸ô¡Í•ÍÍ¥½¹Ì½Èíô¤¹•Ð¡ÁÉ½™¥±”¤°ÁÉ½áäõÁÉ½áä°(€€€€€€€€€€€€€€€€€€€€€€€€€¥¹Ù•¹Ñ½Éå}ÕÉ±Ìõ¥¹Ù•¹Ñ½Éå}ÕÉ±Ì°(€€€€€€€€€€€€€€€€€€€€€€€€€ÍÍÑ¥}…±Ñ•É¹…Ñ•ÌõÍÍÑ¥}…±Ñ•É¹…Ñ•Ì°(€€€€€€€€€€€€€€€€€€€€€€€€€¹½ÍÅ±}ÅÕ•Éäõ¹½ÍÅ±}ÅÕ•Éä¤(€€€€€€€Í…¹¹•ÉÍmÁÉ½™¥±•t€ôÍ…¹¹•È(€€€€€€€É•Á½ÉÑÌ¹…ÁÁ•¹¡Í…¹¹•È¹Í…¸ ¤¤(€€€½µ‰¥¹•€ôM…¹I•Á½ÉÐ (€€€€€€€Ñ…É•ÐõÉ•Á½ÉÑÍlÁt¹Ñ…É•Ð°(€€€€€€€…Ñ¥Ù”õ…Ñ¥Ù”°(€€€€€€€Á…•Í}Í…¹¹•õÍÕ´¡É•Á½ÉÐ¹Á…•Í}Í…¹¹•™½ÈÉ•Á½ÉÐ¥¸É•Á½ÉÑÌ¤°(€€€€€€€É•ÅÕ•ÍÑÍ}Í•¹ÐõÍÕ´¡É•Á½ÉÐ¹É•ÅÕ•ÍÑÍ}Í•¹Ð™½ÈÉ•Á½ÉÐ¥¸É•Á½ÉÑÌ¤°(€€€€€€€™¥¹‘¥¹Ìõm™¥¹‘¥¹œ™½ÈÉ•Á½ÉÐ¥¸É•Á½ÉÑÌ™½È™¥¹‘¥¹œ¥¸É•Á½ÉÐ¹™¥¹‘¥¹Ít°(€€€€€€€•ÉÉ½ÉÌõm˜‰íÁÉ½™¥±•ôèí•ÉÉ½Éôˆ™½ÈÁÉ½™¥±”°É•Á½ÉÐ¥¸é¥À¡ÁÉ½™¥±•Ì°É•Á½ÉÑÌ°ÍÑÉ¥Ðõ…±Í”¤™½È•ÉÉ½È¥¸É•Á½ÉÐ¹•ÉÉ½ÉÍt°(€€€€€€€½Ù•É…”õm˜‰íÁÉ½™¥±•ôèí¹½Ñ•ôˆ™½ÈÁÉ½™¥±”°É•Á½ÉÐ¥¸é¥À¡ÁÉ½™¥±•Ì°É•Á½ÉÑÌ°ÍÑÉ¥Ðõ…±Í”¤™½È¹½Ñ”¥¸É•Á½ÉÐ¹½Ù•É…•t°(€€€€€€€ÁÉ½™¥±•ÌõÁÉ½™¥±•Ì°(€€€€€€€Í•ÍÍ¥½¹}Í½ÕÉ”õ¹•áÐ ¡É•Á½ÉÐ¹Í•ÍÍ¥½¹}Í½ÕÉ”™½ÈÉ•Á½ÉÐ¥¸É•Á½ÉÑÌ¥˜É•Á½ÉÐ¹Í•ÍÍ¥½¹}Í½ÕÉ”€„ô€‰¹½¹”ˆ¤°€‰¹½¹”ˆ¤°(€€€€¤(€€€¥˜±•¸¡ÁÉ½™¥±•Ì¤€ôô€Èè(€€€€€€€½µ‰¥¹•¹™¥¹‘¥¹Ì¹•áÑ•¹¡}ÁÉ½™¥±•}‘¥™™•É•¹•Ì¡Í…¹¹•ÉÍmÁÉ½™¥±•ÍlÁut°Í…¹¹•ÉÍmÁÉ½™¥±•ÍlÅut°É•Á½ÉÑÌ¤¤(€€€Í•Ù•É¥Ñä€ôì‰É¥Ñ¥…°ˆè€À°€‰¡¥ ˆè€Ä°€‰µ•‘¥Õ´ˆè€È°€‰±½Üˆè€Ì°€‰¥¹™¼ˆè€Ñô(€€€Õ¹¥ÅÕ”€ôí™¥¹‘¥¹œ¹¥è™¥¹‘¥¹œ™½È™¥¹‘¥¹œ¥¸½µ‰¥¹•¹™¥¹‘¥¹Íô(€€€½µ‰¥¹•¹™¥¹‘¥¹Ì€ôÍ½ÉÑ•¡Õ¹¥ÅÕ”¹Ù…±Õ•Ì ¤°­•äõ±…µ‰‘„™¥¹‘¥¹œè€ (€€€€€€€Í•Ù•É¥Ñä¹•Ð¡™¥¹‘¥¹œ¹Í•Ù•É¥Ñä°€ä¤°™¥¹‘¥¹œ¹ÕÉ°°™¥¹‘¥¹œ¹ÉÕ±”°(€€€€€€€™¥¹‘¥¹œ¹ÁÉ½™¥±”°™¥¹‘¥¹œ¹Á…É…µ•Ñ•È°™¥¹‘¥¹œ¹¥°(€€€€¤¤(€€€É•ÑÕÉ¸½µ‰¥¹•(()‘•˜}½‰Í•ÉÙ…Ñ¥½¹}‘¥™™•É•¹•Ì¡™¥ÉÍÐèM…¹¹•È°Í•½¹èM…¹¹•È°ÕÉ°èÍÑÈ¤€´ø±¥ÍÑmÍÑÉtè(€€€±•™Ð€ô™¥ÉÍÐ¹½‰Í•ÉÙ…Ñ¥½¹Ì¹•Ð¡ÕÉ°¤(€€€É¥¡Ð€ôÍ•½¹¹½‰Í•ÉÙ…Ñ¥½¹Ì¹•Ð¡ÕÉ°¤(€€€¥˜±•™Ð¥Ì9½¹”½ÈÉ¥¡Ð¥Ì9½¹”è(€€€€€€€É•ÑÕÉ¸m˜‰Á…”Ù¥Í¥‰±”½¹±äÑ¼í™¥ÉÍÐ¹ÁÉ½™¥±”¥˜É¥¡Ð¥Ì9½¹”•±Í”Í•½¹¹ÁÉ½™¥±•ô‰t(€€€‘¥™™•É•¹•Ìè±¥ÍÑmÍÑÉt€ômt(€€€¥˜±•™Ð¹ÍÑ…ÑÕÌ€„ôÉ¥¡Ð¹ÍÑ…ÑÕÌè(€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹¡˜‰ÍÑ…ÑÕÌí™¥ÉÍÐ¹ÁÉ½™¥±•ôõí±•™Ð¹ÍÑ…ÑÕÍô°íÍ•½¹¹ÁÉ½™¥±•ôõíÉ¥¡Ð¹ÍÑ…ÑÕÍôˆ¤(€€€¥˜€¡±•™Ð¹‰½‘å}±•¹Ñ °±•™Ð¹‰½‘å}Í¡„ÈÔØ¤€„ô€¡É¥¡Ð¹‰½‘å}±•¹Ñ °É¥¡Ð¹‰½‘å}Í¡„ÈÔØ¤è(€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹ (€€€€€€€€€€€˜‰‰½‘äí™¥ÉÍÐ¹ÁÉ½™¥±•ôõ±•¸éí±•™Ð¹‰½‘å}±•¹Ñ¡ô±Í¡„ÈÔØéí±•™Ð¹‰½‘å}Í¡„ÈÔÙlèÄÉuôì€ˆ(€€€€€€€€€€€˜‰íÍ•½¹¹ÁÉ½™¥±•ôõ±•¸éíÉ¥¡Ð¹‰½‘å}±•¹Ñ¡ô±Í¡„ÈÔØéíÉ¥¡Ð¹‰½‘å}Í¡„ÈÔÙlèÄÉuôˆ(€€€€€€€€¤(€€€¥˜±•™Ð¹™½ÉµÌ€„ôÉ¥¡Ð¹™½ÉµÌè(€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹¡˜‰™½É´Í¥¹…ÑÕÉ•Ì‘¥™™•È€¡í±•¸¡±•™Ð¹™½ÉµÌ¥ôÙÌí±•¸¡É¥¡Ð¹™½ÉµÌ¥ô¤ˆ¤(€€€¥˜±•™Ð¹Á…É…µ•Ñ•ÉÌ€„ôÉ¥¡Ð¹Á…É…µ•Ñ•ÉÌè(€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹ (€€€€€€€€€€€˜‰Á…É…µ•Ñ•ÉÌí™¥ÉÍÐ¹ÁÉ½™¥±•ôõí±¥ÍÐ¡±•™Ð¹Á…É…µ•Ñ•ÉÌ¥ô°íÍ•½¹¹ÁÉ½™¥±•ôõí±¥ÍÐ¡É¥¡Ð¹Á…É…µ•Ñ•ÉÌ¥ôˆ(€€€€€€€€¤(€€€É•ÑÕÉ¸‘¥™™•É•¹•Ì(()‘•˜}ÁÉ½™¥±•}‘¥™™•É•¹•}™¥¹‘¥¹œ¡™¥ÉÍÐèM…¹¹•È°Í•½¹èM…¹¹•È°ÕÉ°èÍÑÈ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‘¥™™•É•¹•Ìè±¥ÍÑmÍÑÉt¤€´ø¥¹‘¥¹œè(€€€É•ÑÕÉ¸¥¹‘¥¹œ (€€€€€€€ÉÕ±”ô‰]µAI=%1µ%´ÀÀÄˆ°(€€€€€€€Ñ¥Ñ±”ô‰•Í­Ñ½À½µ½‰¥±”É•ÍÁ½¹Í”ÍÕÉ™…”‘¥™™•ÉÌˆ°(€€€€€€€Í•Ù•É¥Ñäô‰¥¹™¼ˆ°(€€€€€€€½¹™¥‘•¹”ô‰¡¥ ˆ°(€€€€€€€ÕÉ°õÕÉ°°(€€€€€€€ÁÉ½™¥±”ô‰½µÁ…É¥Í½¸ˆ°(€€€€€€€•Ù¥‘•¹”ôˆì€ˆ¹©½¥¸¡‘¥™™•É•¹•Ì¤°(€€€€€€€Ù•Ñ½Èô (€€€€€€€€€€€˜‰I•Á•…ÐPíÉ•‘…Ñ}ÕÉ°¡ÕÉ°¥ôÝ¥Ñ M•Œµ µUµ5½‰¥±”íAI=%1Mm™¥ÉÍÐ¹ÁÉ½™¥±•ulM•Œµ µUµ5½‰¥±”uô€ˆ(€€€€€€€€€€€˜‰…¹íAI=%1MmÍ•½¹¹ÁÉ½™¥±•ulM•Œµ µUµ5½‰¥±”uôì¥¹ÍÁ•ÐÁÉ½™¥±”µÑ…•…¹‘¥‘…Ñ•Ì¸ˆ(€€€€€€€€¤°(€€€€€€€Á…Ñ ô‰ÁÁ±äÑ¡”Í…µ”…ÕÑ¡•¹Ñ¥…Ñ¥½¸°…ÕÑ¡½É¥é…Ñ¥½¸°Ù…±¥‘…Ñ¥½¸°…¹½ÕÑÁÕÐ•¹½‘¥¹œÑ¼•Ù•Éä‘•Ù¥”µÍÁ•¥™¥ŒÉ½ÕÑ”¸ˆ°(€€€€€€€™±…}Á…Ñ ô‰‘•Ù¥”µÍÁ•¥™¥ŒÍÕÉ™…”µ…ä•áÁ½Í”„‘¥ÍÑ¥¹ÐÉ½ÕÑ”½È¥¹ÁÕÐ¸Y…±¥‘…Ñ”¥ÑÌÁÉ½™¥±”µÑ…•™¥¹‘¥¹Ì‰•™½É”™±…œÉ•½Ù•Éä¸ˆ°(€€€€¤(()‘•˜}ÁÉ½™¥±•}‘¥™™•É•¹•Ì¡™¥ÉÍÐèM…¹¹•È°Í•½¹èM…¹¹•È°(€€€€€€€€€€€€€€€€€€€€€€€€É•Á½ÉÑÌè±¥ÍÑmM…¹I•Á½ÉÑt¤€´ø±¥ÍÑm¥¹‘¥¹tè(€€€½ÕÐè±¥ÍÑm¥¹‘¥¹t€ômt(€€€™¥ÉÍÑ}™¥¹‘¥¹Ì€ôì¡¥Ñ•´¹ÕÉ°°¥Ñ•´¹ÉÕ±”°¥Ñ•´¹Á…É…µ•Ñ•È¤™½È¥Ñ•´¥¸É•Á½ÉÑÍlÁt¹™¥¹‘¥¹Íô(€€€Í•½¹‘}™¥¹‘¥¹Ì€ôì¡¥Ñ•´¹ÕÉ°°¥Ñ•´¹ÉÕ±”°¥Ñ•´¹Á…É…µ•Ñ•È¤™½È¥Ñ•´¥¸É•Á½ÉÑÍlÅt¹™¥¹‘¥¹Íô(€€€™¥¹‘¥¹}‘¥™™•É•¹”€ô™¥ÉÍÑ}™¥¹‘¥¹Ì€„ôÍ•½¹‘}™¥¹‘¥¹Ì(€€€ÕÉ±Ì€ôÍ½ÉÑ•¡Í•Ð¡™¥ÉÍÐ¹½‰Í•ÉÙ…Ñ¥½¹Ì¤ðÍ•Ð¡Í•½¹¹½‰Í•ÉÙ…Ñ¥½¹Ì¤¤(€€€™½ÈÕÉ°¥¸ÕÉ±Ìè(€€€€€€€‘¥™™•É•¹•Ì€ô}½‰Í•ÉÙ…Ñ¥½¹}‘¥™™•É•¹•Ì¡™¥ÉÍÐ°Í•½¹°ÕÉ°¤(€€€€€€€±•™Ñ}ÉÕ±•Ì€ôÍ½ÉÑ• ¡ÉÕ±”°Á…É…µ•Ñ•È¤™½È™¥¹‘¥¹}ÕÉ°°ÉÕ±”°Á…É…µ•Ñ•È¥¸™¥ÉÍÑ}™¥¹‘¥¹Ì¥˜™¥¹‘¥¹}ÕÉ°€ôôÕÉ°¤(€€€€€€€É¥¡Ñ}ÉÕ±•Ì€ôÍ½ÉÑ• ¡ÉÕ±”°Á…É…µ•Ñ•È¤™½È™¥¹‘¥¹}ÕÉ°°ÉÕ±”°Á…É…µ•Ñ•È¥¸Í•½¹‘}™¥¹‘¥¹Ì¥˜™¥¹‘¥¹}ÕÉ°€ôôÕÉ°¤(€€€€€€€¥˜±•™Ñ}ÉÕ±•Ì€„ôÉ¥¡Ñ}ÉÕ±•Ìè(€€€€€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹¡˜‰™¥¹‘¥¹œ­•åÌí™¥ÉÍÐ¹ÁÉ½™¥±•ôõí±•™Ñ}ÉÕ±•Íô°íÍ•½¹¹ÁÉ½™¥±•ôõíÉ¥¡Ñ}ÉÕ±•Íôˆ¤(€€€€€€€¥˜ÕÉ°€ôô™¥ÉÍÐ¹Ñ…É•Ð…¹™¥¹‘¥¹}‘¥™™•É•¹”è(€€€€€€€€€€€±•™Ñ}½¹±ä€ôÍ½ÉÑ•¡™¥ÉÍÑ}™¥¹‘¥¹Ì€´Í•½¹‘}™¥¹‘¥¹Ì¥lèát(€€€€€€€€€€€É¥¡Ñ}½¹±ä€ôÍ½ÉÑ•¡Í•½¹‘}™¥¹‘¥¹Ì€´™¥ÉÍÑ}™¥¹‘¥¹Ì¥lèát(€€€€€€€€€€€‘¥™™•É•¹•Ì¹…ÁÁ•¹ (€€€€€€€€€€€€€€€˜‰ÁÉ½™¥±”µ½¹±ä™¥¹‘¥¹Ìí™¥ÉÍÐ¹ÁÉ½™¥±•ôõí±•™Ñ}½¹±åô°íÍ•½¹¹ÁÉ½™¥±•ôõíÉ¥¡Ñ}½¹±åôˆ(€€€€€€€€€€€€¤(€€€€€€€¥˜‘¥™™•É•¹•Ìè(€€€€€€€€€€€½ÕÐ¹…ÁÁ•¹¡}ÁÉ½™¥±•}‘¥™™•É•¹•}™¥¹‘¥¹œ¡™¥ÉÍÐ°Í•½¹°ÕÉ°°‘¥™™•É•¹•Ì¤¤(€€€É•ÑÕÉ¸½ÕÐ(

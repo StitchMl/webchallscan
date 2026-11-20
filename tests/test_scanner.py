@@ -299,6 +299,8 @@ def test_select_defaults_preserve_first_or_explicit_option():
       <select name="first"><option value="a">A</option><option value="b">B</option></select>
       <select name="chosen"><option value="a">A</option><option selected value="b">B</option></select>
       <select name="empty"><option value="">None</option><option value="x">X</option></select>
+      <select name="text"><option> Guest </option><option>Admin</option></select>
+      <select name="selected-text"><option>User</option><option selected> Site  admin </option></select>
       <input name="other" value="kept">
     </form>
     """)
@@ -306,6 +308,8 @@ def test_select_defaults_preserve_first_or_explicit_option():
         ("first", "select", "a"),
         ("chosen", "select", "b"),
         ("empty", "select", ""),
+        ("text", "select", "Guest"),
+        ("selected-text", "select", "Site admin"),
         ("other", "text", "kept"),
     ]
 
@@ -587,6 +591,7 @@ def test_passive_jwt_discovery_from_response_and_cookies_redacts_values(server):
     import base64
     import json
     from types import SimpleNamespace
+
     from webchallscan.scanner import Response
 
     def encode(obj):
