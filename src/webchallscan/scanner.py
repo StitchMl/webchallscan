@@ -63,6 +63,41 @@ PROFILES = {
 }
 
 
+def _line_comment_end(text: str, start: int) -> int:
+    """Return the end of a `//` comment starting at a line start, or -1."""
+    index = start
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    if not text.startswith("//", index) or text.startswith("#", index + 2):
+        return -1
+    while index < len(text) and text[index] not in "\r\n":
+        index += 1
+    return index
+
+
+def _js_comments(text: str) -> list[str]:
+    """Collect line-start `//` comments and `/* */` blocks in one linear pass."""
+    comments: list[str] = []
+    index = 0
+    block_possible = True
+    while index < len(text):
+        if index == 0 or text[index - 1] == "\n":
+            end = _line_comment_end(text, index)
+            if end >= 0:
+                comments.append(text[index:end])
+                index = max(end, index + 1)
+                continue
+        if block_possible and text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            if close >= 0:
+                comments.append(text[index:close + 2])
+                index = close + 2
+                continue
+            block_possible = False
+        index += 1
+    return comments
+
+
 def _comment_keywords(comment: str) -> set[str]:
     """Return names of interesting keywords, never raw comment content."""
     if len(comment) > 100_000:
@@ -743,10 +778,7 @@ class Scanner:
         """Scan bounded JavaScript comment syntax without executing scripts."""
         if response.status != 200:
             return []
-        comments = re.findall(
-            r"(?<![^\n])[ \t]*//(?!#)[^\r\n]*|/\*[\s\S]*?\*/",
-            response.text[:MAX_BODY],
-        )
+        comments = _js_comments(response.text[:MAX_BODY])
         keywords = set()
         for comment in comments[:100]:
             keywords.update(_comment_keywords(comment))
