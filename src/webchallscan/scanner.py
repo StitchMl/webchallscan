@@ -744,7 +744,7 @@ class Scanner:
         if response.status != 200:
             return []
         comments = re.findall(
-            r"(?m)^[ \t]*//(?!#)[^\r\n]*|/\*[\s\S]*?\*/",
+            r"(?m)(?:^[ \t]*//(?!#)[^\r\n]*|/\*[\s\S]*?\*/)",
             response.text[:MAX_BODY],
         )
         keywords = set()
