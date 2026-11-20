@@ -99,7 +99,9 @@ def test_json_command_preserves_legacy_equivalent_arguments():
         "json", "cases.json", "--authorized", "--active", "--insecure",
     ]))
     assert args.check_json_cases == "cases.json"
-    assert args.authorized and args.active and args.insecure
+    assert args.authorized
+    assert args.active
+    assert args.insecure
     assert parser().parse_args(_command_arguments([
         "--check-json-cases", "cases.json", "--authorized", "--active",
     ])).check_json_cases == "cases.json"

@@ -136,9 +136,9 @@ class _LocalJsonHandler(BaseHTTPRequestHandler):
         pass
 
 
-def test_json_ssti_real_local_http_respects_budgets_and_redacts_secrets():
+def test_json_ssti_real_local_http_respects_budgets_and_redacts_secrets(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), _LocalJsonHandler)
-    _LocalJsonHandler.requests = 0
+    monkeypatch.setattr(_LocalJsonHandler, "requests", 0)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     try:
