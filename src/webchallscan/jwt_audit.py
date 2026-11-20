@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import os
 import re
@@ -20,7 +19,7 @@ def _decode_json_part(value: str) -> dict:
     try:
         raw = base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
         decoded = json.loads(raw)
-    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+    except ValueError as exc:
         raise ValueError("invalid JWT JSON section") from exc
     if not isinstance(decoded, dict):
         raise ValueError("JWT header and payload must be objects")
