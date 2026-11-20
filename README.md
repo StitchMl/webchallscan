@@ -1,5 +1,24 @@
 # webchallscan
 
+### Verification and roadmap delivery
+
+The Python 3.10 and 3.12 workflows test the installed CLI commands and run
+all regression tests with branch coverage. Each successful job publishes its
+own `coverage-python-*` XML artifact for inspection in GitHub Actions.
+SonarQube Cloud **Automatic Analysis** does not import this CI coverage XML;
+therefore an empty coverage widget on SonarCloud is not proof that tests
+were skipped. Do not enable CI-based SonarScanner without first switching
+analysis modes and configuring its credentials.
+
+The v0.5.0 roadmap's discovery, HTTP posture, Burp import/proxy/replay,
+CDP inventory, deterministic SSTI/NoSQL, JWT audit, source-map hints,
+CLI subcommands and reporting flows are implemented. JSON POST tests are
+available through `webchallscan json cases.json --authorized --active`.
+They require a manually approved body and **are not automatically generated
+from CDP/Burp traffic**: this preserves explicit authorization and avoids
+replaying potentially state-changing requests. No scanner guarantees full
+vulnerability coverage or automatic flag recovery.
+
 ### SonarQube Cloud Automatic Analysis
 
 The project uses SonarQube Cloud **Automatic Analysis** on pushes and pull

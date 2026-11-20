@@ -19,7 +19,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install project and test dependencies
         run: python -m pip install -e '.[dev]'
+      - name: Check installed CLI entry points
+        run: |
+          python -m webchallscan --version
+          python -m webchallscan --help
+          python -m webchallscan json --help
       - name: Run regression tests with coverage
         run: python -m coverage run --source=webchallscan --branch -m pytest -q
-      - name: Write Sonar coverage report
-        run: python -m coverage xml
+      - name: Write coverage report
+        run: |
+          python -m coverage report
+          python -m coverage xml
+      - name: Publish coverage XML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: error
+          retention-days: 14
