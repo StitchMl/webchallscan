@@ -82,7 +82,8 @@ def test_burp_session_rejects_dtd(tmp_path, monkeypatch):
                             "https://lab.example")
 
 
-def test_session_export_refuses_input_outside_working_directory(tmp_path, monkeypatch):
+def test_session_export_refuses_input_outside_working_directory(
+        tmp_path, monkeypatch, make_symlink):
     monkeypatch.chdir(tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -95,7 +96,7 @@ def test_session_export_refuses_input_outside_working_directory(tmp_path, monkey
             export_burp_session(source, str(output), "https://lab.example")
         assert not output.exists()
     symlink = workspace / "alias.xml"
-    symlink.symlink_to(external)
+    make_symlink(symlink, external)
     with pytest.raises(ValueError, match="working directory"):
         export_burp_session(str(symlink), str(output), "https://lab.example")
     assert not output.exists()

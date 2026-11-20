@@ -94,7 +94,8 @@ def test_cli_source_map_file_default_json_and_opt_in_human(tmp_path, monkeypatch
     assert "only to scanner" in capsys.readouterr().err
 
 
-def test_source_map_rejects_outside_workspace_file_and_symlink(tmp_path, monkeypatch):
+def test_source_map_rejects_outside_workspace_file_and_symlink(
+        tmp_path, monkeypatch, make_symlink):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "outside.js.map"
@@ -105,7 +106,7 @@ def test_source_map_rejects_outside_workspace_file_and_symlink(tmp_path, monkeyp
     with pytest.raises(ValueError, match="working directory"):
         audit_source_map_file("../outside.js.map")
     alias = workspace / "alias.js.map"
-    alias.symlink_to(outside)
+    make_symlink(alias, outside)
     with pytest.raises(ValueError, match="working directory"):
         audit_source_map_file(str(alias))
 

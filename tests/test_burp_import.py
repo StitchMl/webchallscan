@@ -86,7 +86,8 @@ def test_cli_burp_mode_is_offline_and_requires_authorization(tmp_path, capsys, m
     assert main(["https://lab.example", "--authorized", "--import-burp", str(file)]) == 2
 
 
-def test_import_refuses_outside_workspace_and_symlink(tmp_path, monkeypatch):
+def test_import_refuses_outside_workspace_and_symlink(tmp_path, monkeypatch,
+                                                      make_symlink):
     from pathlib import Path
     workspace = tmp_path / "project"
     workspace.mkdir()
@@ -98,7 +99,7 @@ def test_import_refuses_outside_workspace_and_symlink(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="working directory"):
         import_burp_xml("../secrets.xml")
     alias = workspace / "linked.xml"
-    alias.symlink_to(source)
+    make_symlink(alias, source)
     with pytest.raises(ValueError, match="working directory"):
         import_burp_xml(str(alias))
 

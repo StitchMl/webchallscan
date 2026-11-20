@@ -92,12 +92,13 @@ def test_session_file_rejects_oversize_before_json_parse(tmp_path, monkeypatch):
         load_session_file(str(file))
 
 
-def test_session_file_refuses_symlink_to_other_user_file(tmp_path, monkeypatch):
+def test_session_file_refuses_symlink_to_other_user_file(tmp_path, monkeypatch,
+                                                        make_symlink):
     monkeypatch.chdir(tmp_path)
     original = tmp_path / "real.json"
     original.write_text(json.dumps({"url": "https://lab.example", "cookies": []}))
     alias = tmp_path / "alias.json"
-    alias.symlink_to(original)
+    make_symlink(alias, original)
     with pytest.raises(SessionCaptureError, match="regular file"):
         load_session_file(str(alias))
     assert load_session_file(str(original)).url == "https://lab.example"

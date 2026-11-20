@@ -65,12 +65,13 @@ def test_jwt_file_refuses_unsafe_cli_paths(tmp_path, monkeypatch, unsafe):
         audit_jwt_file(unsafe)
 
 
-def test_jwt_file_rejects_symlink_and_too_large_input(tmp_path, monkeypatch):
+def test_jwt_file_rejects_symlink_and_too_large_input(tmp_path, monkeypatch,
+                                                      make_symlink):
     monkeypatch.chdir(tmp_path)
     file = tmp_path / "token.jwt"
     file.write_text("valid-looking.jwt.value")
     alias = tmp_path / "alias.jwt"
-    alias.symlink_to(file)
+    make_symlink(alias, file)
     with pytest.raises(ValueError, match="regular"):
         audit_jwt_file("alias.jwt")
     file.write_bytes(b" " * 16_385)
