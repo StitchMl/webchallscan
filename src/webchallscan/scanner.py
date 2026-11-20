@@ -583,9 +583,14 @@ class Scanner:
             fields.append((finding.parameter, value))
         if finding.method == "POST":
             return self._request(finding.url, "POST", urlencode(fields).encode())
-        url = finding.url
-        for key, field_value in dict(fields).items():
-            url = self._set_query(url, key, field_value)
+        parsed = urlsplit(finding.url)
+        query_fields = parse_qsl(parsed.query, keep_blank_values=True)
+        if tuple(query_fields) == finding.request_fields:
+            query_fields = fields
+        else:
+            query_fields.extend(fields)
+        url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                          urlencode(query_fields), ""))
         return self._request(url)
 
     def _active_probe(self, finding: Finding) -> Finding | None:

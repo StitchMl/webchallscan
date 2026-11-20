@@ -69,6 +69,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send("session-ok" if "wcs_session=valid" in self.headers.get("Cookie", "") else "denied", 200 if "wcs_session=valid" in self.headers.get("Cookie", "") else 403)
         elif p.path == "/form":
             self._send('<html><form action="/postrun" method="post"><input type="hidden" name="csrf" value="token-42"><input name="cmd" value="default"></form></html>')
+        elif p.path == "/repeated-get-form":
+            self._send('<html><form action="/repeated-get-run?source=action" method="get">'
+                       '<input name="cmd" value="default">'
+                       '<input type="hidden" name="scope" value="read">'
+                       '<input type="hidden" name="scope" value="write">'
+                       '</form></html>')
+        elif p.path == "/repeated-get-run":
+            if (values.get("source") == ["action"]
+                    and values.get("scope") == ["read", "write"]
+                    and values.get("cmd") == [CMD_PROBE]):
+                self._send(CMD_RESULT)
+            else:
+                self._send("denied", 403)
         elif p.path == "/repeated-post-form":
             self._send('<html><form action="/repeated-post-run" method="post">'
                        '<input name="cmd" value="default">'
@@ -737,3 +750,42 @@ def test_active_post_preserves_repeated_form_fields_and_request_budget(server):
     assert ("csrf", "token-42") in confirmed[0].request_fields
     assert report.requests_sent <= 80
     assert report.pages_scanned == 1
+
+
+def test_active_get_preserves_repeated_fields_and_action_query(server):
+    scanner = Scanner(server + "/repeated-get-form", active=True,
+                      max_pages=1, max_requests=80)
+    report = scanner.scan()
+    confirmed = [finding for finding in report.findings
+                 if finding.rule == "WEB-CMDI-001"
+                 and finding.parameter == "cmd"
+                 and finding.exploit_status == "payload-ready"]
+    assert confirmed
+    assert confirmed[0].method == "GET"
+    assert confirmed[0].request_fields.count(("scope", "read")) == 1
+    assert confirmed[0].request_fields.count(("scope", "write")) == 1
+    assert report.requests_sent <= 80
+    assert report.pages_scanned == 1
+
+
+def test_get_query_probe_preserves_repeated_query_parameters(server):
+    from webchallscan.scanner import Response
+
+    scanner = Scanner(server + "/run?scope=read&scope=write&cmd=default")
+    finding = scanner._parameter_hypotheses(
+        scanner.target, "GET", "cmd",
+        (("scope", "read"), ("scope", "write"), ("cmd", "default")),
+        generic=True,
+    )[0]
+    captured = []
+
+    def capture(url, method="GET", data=None):
+        captured.append((url, method, data))
+        return Response(url, 200, {}, "ok")
+
+    scanner._request = capture
+    scanner._send_probe(finding, CMD_PROBE)
+    assert parse_qs(urlsplit(captured[0][0]).query) == {
+        "scope": ["read", "write"], "cmd": [CMD_PROBE],
+    }
+    assert captured[0][1:] == ("GET", None)
