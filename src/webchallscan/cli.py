@@ -6,7 +6,6 @@ import site
 import sys
 import sysconfig
 from pathlib import Path
-from urllib.error import URLError
 
 from . import __version__
 from .access_checks import load_cases, run_readonly_cases
@@ -27,7 +26,6 @@ from .source_map_audit import audit_source_map_file
 from .structured_report import render_structured_text
 from .session import (
     BrowserSession,
-    SessionCaptureError,
     capture_cdp_session,
     discover_cdp,
     listen_for_extension,
@@ -127,311 +125,376 @@ def _normalize_command(argv: list[str]) -> list[str]:
     return argv
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
+def _truthy(args, *names) -> bool:
+    return any(getattr(args, name) for name in names)
+
+
+def _present(args, *names) -> bool:
+    return any(getattr(args, name) is not None for name in names)
+
+
+def _fail(message: str) -> int:
+    print(message, file=sys.stderr)
+    return 2
+
+
+def _format_result(args, result: dict, indent: int = 2) -> str:
+    if args.human:
+        return render_structured_text(result, args.color, verbose=args.verbose)
+    return json.dumps(result, indent=indent)
+
+
+_REPORT_ONLY_FLAGS = (
+    "quick", "plan_inventory", "import_burp", "burp_session_from", "audit_jwt_file",
+    "audit_session_file", "audit_source_map_file", "validate_api_contract",
+    "check_api_cases", "check_json_cases", "burp_procedure", "export_curl", "export_python",
+)
+
+
+def _check_report_options(args) -> int | None:
     if args.human and args.format != "text":
-        print("error: --human and --format json/markdown are mutually exclusive; use --format text", file=sys.stderr)
-        return 2
+        return _fail("error: --human and --format json/markdown are mutually exclusive; use --format text")
     if args.format == "markdown" and (
-            args.quick or args.observe_network is not None or args.plan_inventory
-            or args.import_burp or args.burp_session_from or args.audit_jwt_file
-            or args.audit_session_file or args.audit_source_map_file or args.validate_api_contract
-            or args.check_api_cases or args.check_json_cases
-            or args.burp_procedure or args.export_curl or args.export_python):
-        print("error: --format markdown applies only to scanner reports", file=sys.stderr)
-        return 2
+            _truthy(args, *_REPORT_ONLY_FLAGS) or args.observe_network is not None):
+        return _fail("error: --format markdown applies only to scanner reports")
     if args.top is not None and not 1 <= args.top <= 1000:
-        print("error: --top must be 1-1000", file=sys.stderr)
-        return 2
+        return _fail("error: --top must be 1-1000")
     if (args.top is not None or args.min_severity != "info") and (
-            args.format == "json" or args.human or args.quick
-            or args.observe_network is not None or args.plan_inventory
-            or args.import_burp or args.burp_session_from
-            or args.audit_jwt_file or args.audit_session_file or args.audit_source_map_file
-            or args.validate_api_contract or args.check_api_cases
-            or args.check_json_cases or args.burp_procedure
-            or args.export_curl or args.export_python):
-        print("error: --top and --min-severity apply only to scanner text reports", file=sys.stderr)
-        return 2
+            args.format == "json" or args.human
+            or _truthy(args, *_REPORT_ONLY_FLAGS) or args.observe_network is not None):
+        return _fail("error: --top and --min-severity apply only to scanner text reports")
+    return None
 
-    def _format_result(result: dict, indent: int = 2) -> str:
-        if args.human:
-            return render_structured_text(result, args.color, verbose=args.verbose)
-        return json.dumps(result, indent=indent)
 
+def _check_nosql_option(args) -> int | None:
     if args.nosql_query and (
-            not args.active or args.quick or args.validate_api_contract or
-            args.check_api_cases or args.check_json_cases or args.import_burp or
-            args.burp_session_from or args.plan_inventory or args.audit_jwt_file or
-            args.observe_network is not None):
-        print("error: --nosql-query applies only to --active scanner mode", file=sys.stderr)
-        return 2
-    if args.extension_path:
-        try:
-            print(_extension_path())
-            return 0
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-    if args.proxy and (args.quick or args.observe_network is not None or args.plan_inventory or
-                       args.import_burp or args.audit_jwt_file or args.audit_session_file or args.audit_source_map_file or args.burp_session_from):
-        print("error: --proxy is supported only in scanner mode", file=sys.stderr)
-        return 2
-    if args.audit_source_map_file is not None:
-        if (args.url or args.quick or args.active or args.cdp or args.browser_session
-                or args.session_file or args.listen_session or args.observe_network is not None
-                or args.plan_inventory or args.import_burp or args.burp_session_from
-                or args.burp_session_out or args.allow_secret_export
-                or args.burp_session_path is not None or args.burp_session_index is not None
-                or args.check_json_cases or args.validate_api_contract or args.check_api_cases
-                or args.audit_jwt_file or args.audit_session_file or args.from_inventory
-                or args.burp_procedure or args.burp_raw or args.include_session_secrets
-                or args.export_curl or args.export_python or args.expect_origin
-                or args.nosql_query or args.ssti_alternates or args.proxy or args.insecure):
-            print("error: --audit-source-map-file is an exclusive offline mode", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(audit_source_map_file(args.audit_source_map_file), indent=2))
-            return 0
-        except (ValueError, OSError, UnicodeError):
-            print("error: source-map audit failed: invalid or oversized input file", file=sys.stderr)
-            return 2
-    if args.audit_session_file is not None:
-        if (args.url or args.quick or args.active or args.cdp or args.browser_session
-                or args.session_file or args.listen_session or args.observe_network is not None
-                or args.plan_inventory or args.import_burp or args.burp_session_from
-                or args.burp_session_out or args.allow_secret_export
-                or args.check_json_cases or args.validate_api_contract or args.check_api_cases
-                or args.audit_jwt_file or args.from_inventory or args.burp_procedure
-                or args.burp_raw or args.include_session_secrets or args.export_curl
-                or args.export_python or args.expect_origin or args.nosql_query):
-            print("error: --audit-session-file is an exclusive offline mode", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(audit_session_file(args.audit_session_file), indent=2))
-            return 0
-        except (ValueError, OSError, UnicodeError):
-            print("error: session-format audit failed: invalid input file", file=sys.stderr)
-            return 2
+            not args.active
+            or _truthy(args, "quick", "validate_api_contract", "check_api_cases", "check_json_cases",
+                       "import_burp", "burp_session_from", "plan_inventory", "audit_jwt_file")
+            or args.observe_network is not None):
+        return _fail("error: --nosql-query applies only to --active scanner mode")
+    return None
+
+
+def _handle_extension_path(args) -> int | None:
+    if not args.extension_path:
+        return None
+    try:
+        print(_extension_path())
+        return 0
+    except ValueError as exc:
+        return _fail(f"error: {exc}")
+
+
+def _check_proxy_option(args) -> int | None:
+    if args.proxy and (
+            _truthy(args, "quick", "plan_inventory", "import_burp", "audit_jwt_file",
+                    "audit_session_file", "audit_source_map_file", "burp_session_from")
+            or args.observe_network is not None):
+        return _fail("error: --proxy is supported only in scanner mode")
+    return None
+
+
+def _handle_source_map_audit(args) -> int | None:
+    if args.audit_source_map_file is None:
+        return None
+    if (_truthy(args, "url", "quick", "active", "cdp", "browser_session", "session_file",
+                "listen_session", "plan_inventory", "import_burp", "burp_session_from",
+                "burp_session_out", "allow_secret_export", "check_json_cases",
+                "validate_api_contract", "check_api_cases", "audit_jwt_file",
+                "audit_session_file", "from_inventory", "burp_procedure", "burp_raw",
+                "include_session_secrets", "export_curl", "export_python", "expect_origin",
+                "nosql_query", "ssti_alternates", "proxy", "insecure")
+            or _present(args, "observe_network", "burp_session_path", "burp_session_index")):
+        return _fail("error: --audit-source-map-file is an exclusive offline mode")
+    try:
+        print(_format_result(args, audit_source_map_file(args.audit_source_map_file), indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: source-map audit failed: invalid or oversized input file")
+
+
+def _handle_session_audit(args) -> int | None:
+    if args.audit_session_file is None:
+        return None
+    if (_truthy(args, "url", "quick", "active", "cdp", "browser_session", "session_file",
+                "listen_session", "plan_inventory", "import_burp", "burp_session_from",
+                "burp_session_out", "allow_secret_export", "check_json_cases",
+                "validate_api_contract", "check_api_cases", "audit_jwt_file", "from_inventory",
+                "burp_procedure", "burp_raw", "include_session_secrets", "export_curl",
+                "export_python", "expect_origin", "nosql_query")
+            or args.observe_network is not None):
+        return _fail("error: --audit-session-file is an exclusive offline mode")
+    try:
+        print(_format_result(args, audit_session_file(args.audit_session_file), indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: session-format audit failed: invalid input file")
+
+
+def _handle_burp_session_export(args) -> int | None:
     if args.burp_session_from is not None:
-        if (not args.authorized or not args.allow_secret_export or
-                not args.expect_origin or not args.burp_session_out or args.url
-                or args.quick or args.active or args.cdp or args.browser_session
-                or args.session_file or args.listen_session or args.plan_inventory
-                or args.observe_network is not None or args.import_burp
-                or args.validate_api_contract or args.check_api_cases
-                or args.check_json_cases or args.audit_jwt_file or args.from_inventory
-                or args.burp_procedure or args.burp_raw or args.include_session_secrets
-                or args.export_curl or args.export_python):
-            print("error: --burp-session-from requires --authorized --allow-secret-export --expect-origin and --burp-session-out; excludes other modes", file=sys.stderr)
-            return 2
+        if (not args.authorized or not args.allow_secret_export
+                or not args.expect_origin or not args.burp_session_out
+                or _truthy(args, "url", "quick", "active", "cdp", "browser_session",
+                           "session_file", "listen_session", "plan_inventory", "import_burp",
+                           "validate_api_contract", "check_api_cases", "check_json_cases",
+                           "audit_jwt_file", "from_inventory", "burp_procedure", "burp_raw",
+                           "include_session_secrets", "export_curl", "export_python")
+                or args.observe_network is not None):
+            return _fail("error: --burp-session-from requires --authorized --allow-secret-export --expect-origin and --burp-session-out; excludes other modes")
         try:
             result = export_burp_session(
                 args.burp_session_from, args.burp_session_out, args.expect_origin,
                 request_path=args.burp_session_path,
                 request_index=1 if args.burp_session_index is None else args.burp_session_index)
             print("warning: new session file contains live cookies; restrict access and delete it after use", file=sys.stderr)
-            print(_format_result(result, indent=2))
+            print(_format_result(args, result, indent=2))
             return 0
-        except (ValueError, OSError, UnicodeError):
-            print("error: Burp session export failed; check origin, source and output path", file=sys.stderr)
-            return 2
-    if (args.burp_session_out or args.allow_secret_export
-            or args.burp_session_path is not None or args.burp_session_index is not None):
-        print("error: Burp session selection/output flags require --burp-session-from", file=sys.stderr)
-        return 2
-    if args.audit_jwt_file is not None:
-        if (args.url or args.active or args.cdp or args.browser_session
-                or args.session_file or args.listen_session or args.quick
-                or args.observe_network is not None or args.plan_inventory
-                or args.validate_api_contract or args.check_api_cases or args.check_json_cases
-                or args.import_burp or args.from_inventory
-                or args.burp_procedure or args.burp_raw or args.include_session_secrets
-                or args.export_curl or args.export_python
-                or args.expect_origin):
-            print("error: --audit-jwt-file is an exclusive offline mode", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(audit_jwt_file(args.audit_jwt_file), indent=2))
-            return 0
-        except (ValueError, OSError, UnicodeError):
-            print("error: JWT audit failed: invalid input file or token", file=sys.stderr)
-            return 2
-    if args.import_burp is not None:
-        if (not args.authorized or args.url or args.active or args.cdp or args.browser_session
-                or args.session_file or args.listen_session or args.quick
-                or args.observe_network is not None or args.plan_inventory
-                or args.validate_api_contract or args.check_api_cases or args.from_inventory
-                or args.check_json_cases or args.audit_jwt_file
-                or args.include_session_secrets or args.burp_procedure or args.burp_raw
-                or args.export_curl or args.export_python):
-            print("error: --import-burp requires --authorized and excludes scan/browser modes", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(import_burp_xml(args.import_burp, args.expect_origin), indent=2))
-            return 0
-        except (ValueError, OSError) as exc:
-            print(f"error: Burp XML import failed: {exc}", file=sys.stderr)
-            return 2
-    if args.check_json_cases is not None:
-        if (not args.authorized or not args.active or args.url or args.quick
-                or args.cdp or args.browser_session or args.session_file
-                or args.listen_session or args.observe_network is not None
-                or args.plan_inventory or args.import_burp or args.from_inventory
-                or args.validate_api_contract or args.check_api_cases
-                or args.audit_jwt_file or args.burp_procedure or args.burp_raw
-                or args.include_session_secrets or args.export_curl
-                or args.export_python):
-            print("error: --check-json-cases requires --authorized --active and excludes other scan modes", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(run_json_cases(
-                load_json_cases(args.check_json_cases), timeout=args.timeout,
-                verify_tls=not args.insecure, proxy=args.proxy), indent=2))
-            return 0
-        except (ValueError, OSError, URLError, json.JSONDecodeError):
-            print("error: JSON validation failed; check contract and connectivity", file=sys.stderr)
-            return 2
-    if args.quick:
-        if args.from_inventory or not args.authorized or not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session or args.plan_inventory or args.check_api_cases or args.validate_api_contract or args.observe_network is not None:
-            print("error: --quick requires --authorized --cdp and no other scan mode", file=sys.stderr)
-            return 2
-        try:
-            print("Quick discovery running: use the selected lab tab now...", file=sys.stderr, flush=True)
-            observed = observe_cdp(args.cdp, 20.0, args.observe_limit)
-            plan = plan_inventory(observed)
-            print(_format_result({
-                "schema": "webchallscan/quick-v1",
-                "origin": observed["origin"],
-                "observed_requests": observed["observed_requests"],
-                "endpoints": observed["endpoints"],
-                "passive_findings": observed["passive_findings"],
-                "triage": plan["checks"],
-                "active_tests_executed": 0,
-                "limitations": observed["limitations"] + [
-                    "No replayable bodies or independent roles were captured; IDOR and business-logic checks remain unverified."
-                ]
-            }, indent=2))
-            return 0
-        except (ValueError, OSError, json.JSONDecodeError):
-            print("error: quick discovery failed; check the focused CDP tab", file=sys.stderr)
-            return 2
-    if args.validate_api_contract is not None:
-        if args.from_inventory or not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory or args.check_api_cases:
-            print("error: --validate-api-contract requires --authorized and excludes other modes", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(validate_contract(load_contract(args.validate_api_contract), timeout=args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
-            return 0
-        except (ValueError, OSError, URLError, json.JSONDecodeError):
-            print("error: contract validation failed; check inputs and connectivity", file=sys.stderr)
-            return 2
-    if args.check_api_cases is not None:
-        if args.from_inventory or not args.authorized or args.cdp or args.url or args.session_file or args.listen_session or args.browser_session or args.observe_network is not None or args.plan_inventory:
-            print("error: --check-api-cases requires --authorized and excludes browser/scan modes", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(run_readonly_cases(load_cases(args.check_api_cases), args.timeout, verify_tls=not args.insecure, proxy=args.proxy), indent=2))
-            return 0
-        except (ValueError, OSError, URLError, json.JSONDecodeError) as exc:
-            print(f"error: API check failed: {type(exc).__name__}", file=sys.stderr)
-            return 2
-    if args.plan_inventory is not None:
-        if args.from_inventory or not args.authorized or args.observe_network is not None or args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
-            print("error: --plan-inventory requires --authorized and cannot be combined with a browser source", file=sys.stderr)
-            return 2
-        try:
-            print(_format_result(plan_inventory(load_inventory(args.plan_inventory), args.expect_origin), indent=2))
-            return 0
-        except (ValueError, OSError, json.JSONDecodeError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-    if args.expect_origin:
-        print("error: --expect-origin only applies to --plan-inventory", file=sys.stderr)
-        return 2
-    if args.observe_network is not None:
-        if args.from_inventory or not args.authorized:
-            print("error: --authorized is required", file=sys.stderr)
-            return 2
-        if not args.cdp or args.url or args.listen_session or args.session_file or args.browser_session:
-            print("error: --observe-network requires --cdp and no positional URL/session source", file=sys.stderr)
-            return 2
-        try:
-            print("Observing focused tab: interact with it now...", file=sys.stderr, flush=True)
-            print(_format_result(observe_cdp(args.cdp, args.observe_network, args.observe_limit), indent=2))
-            return 0
-        except (ValueError, OSError) as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 2
-    if not args.authorized:
-        print("error: --authorized is required; scan only targets you are permitted to test", file=sys.stderr)
-        return 2
-    if (args.export_curl and args.export_python) or (args.burp_procedure and (args.export_curl or args.export_python)):
-        print("error: choose only one of --burp-procedure, --export-curl or --export-python", file=sys.stderr)
-        return 2
-    if args.ssti_alternates and not args.active:
-        print("error: --ssti-alternates requires --active", file=sys.stderr)
-        return 2
-    if args.burp_raw and not args.burp_procedure:
-        print("error: --burp-raw requires --burp-procedure", file=sys.stderr)
-        return 2
-    if args.include_session_secrets and not args.burp_procedure:
-        print("error: --include-session-secrets requires --burp-procedure", file=sys.stderr)
-        return 2
+        except (ValueError, OSError):
+            return _fail("error: Burp session export failed; check origin, source and output path")
+    if args.burp_session_out or args.allow_secret_export or _present(
+            args, "burp_session_path", "burp_session_index"):
+        return _fail("error: Burp session selection/output flags require --burp-session-from")
+    return None
+
+
+def _handle_jwt_audit(args) -> int | None:
+    if args.audit_jwt_file is None:
+        return None
+    if (_truthy(args, "url", "active", "cdp", "browser_session", "session_file",
+                "listen_session", "quick", "plan_inventory", "validate_api_contract",
+                "check_api_cases", "check_json_cases", "import_burp", "from_inventory",
+                "burp_procedure", "burp_raw", "include_session_secrets", "export_curl",
+                "export_python", "expect_origin")
+            or args.observe_network is not None):
+        return _fail("error: --audit-jwt-file is an exclusive offline mode")
     try:
-        captured = None
-        if args.session_file:
-            print("warning: session files contain secrets; restrict file access and delete them after use", file=sys.stderr)
-            captured = load_session_file(args.session_file)
-        elif args.listen_session:
-            captured = listen_for_extension(args.session_wait)
-        elif args.cdp:
-            captured = capture_cdp_session(args.cdp, min(args.timeout, 3.0))
-        elif args.browser_session:
-            endpoint = discover_cdp(args.browser_session)
-            captured = capture_cdp_session(endpoint, min(args.timeout, 3.0))
-        if captured:
-            if args.url:
-                from urllib.parse import urlsplit
-                requested = urlsplit(args.url)
-                selected = urlsplit(captured.url)
-                if (requested.scheme.lower(), requested.netloc.lower()) != (selected.scheme.lower(), selected.netloc.lower()):
-                    raise ValueError("the supplied URL and active browser tab have different origins")
-            target = captured.url
-            if args.profile != "both" and args.profile != captured.profile:
-                raise ValueError(f"captured tab is {captured.profile}; --profile {args.profile} would mislabel its session")
-        else:
-            if not args.url:
-                raise ValueError("URL is required unless --browser-session, --cdp, or --session-file is used")
-            target = args.url
-        profiles = ("desktop", "mobile") if args.profile == "both" else (args.profile,)
-        sessions = None
-        if captured:
-            sessions = {captured.profile: captured}
-            if args.profile == "both":
-                other = "mobile" if captured.profile == "desktop" else "desktop"
-                sessions[other] = BrowserSession(
-                    url=captured.url, cookies=captured.cookies, headers=(), profile=other,
-                    source=captured.source + "-cookie-clone",
-                )
-        inventory_urls = inventory_get_urls(load_inventory(args.from_inventory), target) if args.from_inventory else ()
-        report = scan_profiles(target, profiles=profiles, active=args.active,
-                               max_pages=args.max_pages, max_requests=args.max_requests,
-                               timeout=args.timeout, verify_tls=not args.insecure,
-                               sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls,
-                               ssti_alternates=args.ssti_alternates,
-                               nosql_query=args.nosql_query)
-        if args.export_curl or args.export_python:
-            print(render_snippets(report, "curl" if args.export_curl else "python"))
-            return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
-        if args.burp_procedure:
-            if args.include_session_secrets:
-                print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
-            print(render_burp_procedure(report, args.include_session_secrets, args.burp_raw))
-            return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
-    except (ValueError, SessionCaptureError, OSError, json.JSONDecodeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+        print(_format_result(args, audit_jwt_file(args.audit_jwt_file), indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: JWT audit failed: invalid input file or token")
+
+
+def _handle_burp_import(args) -> int | None:
+    if args.import_burp is None:
+        return None
+    if (not args.authorized
+            or _truthy(args, "url", "active", "cdp", "browser_session", "session_file",
+                       "listen_session", "quick", "plan_inventory", "validate_api_contract",
+                       "check_api_cases", "from_inventory", "check_json_cases",
+                       "audit_jwt_file", "include_session_secrets", "burp_procedure",
+                       "burp_raw", "export_curl", "export_python")
+            or args.observe_network is not None):
+        return _fail("error: --import-burp requires --authorized and excludes scan/browser modes")
+    try:
+        print(_format_result(args, import_burp_xml(args.import_burp, args.expect_origin), indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: Burp XML import failed: {exc}")
+
+
+def _handle_json_cases(args) -> int | None:
+    if args.check_json_cases is None:
+        return None
+    if (not args.authorized or not args.active
+            or _truthy(args, "url", "quick", "cdp", "browser_session", "session_file",
+                       "listen_session", "plan_inventory", "import_burp", "from_inventory",
+                       "validate_api_contract", "check_api_cases", "audit_jwt_file",
+                       "burp_procedure", "burp_raw", "include_session_secrets",
+                       "export_curl", "export_python")
+            or args.observe_network is not None):
+        return _fail("error: --check-json-cases requires --authorized --active and excludes other scan modes")
+    try:
+        print(_format_result(args, run_json_cases(
+            load_json_cases(args.check_json_cases), timeout=args.timeout,
+            verify_tls=not args.insecure, proxy=args.proxy), indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: JSON validation failed; check contract and connectivity")
+
+
+def _handle_quick(args) -> int | None:
+    if not args.quick:
+        return None
+    if (args.from_inventory or not args.authorized
+            or not args.cdp
+            or _truthy(args, "url", "listen_session", "session_file", "browser_session",
+                       "plan_inventory", "check_api_cases", "validate_api_contract")
+            or args.observe_network is not None):
+        return _fail("error: --quick requires --authorized --cdp and no other scan mode")
+    try:
+        print("Quick discovery running: use the selected lab tab now...", file=sys.stderr, flush=True)
+        observed = observe_cdp(args.cdp, 20.0, args.observe_limit)
+        plan = plan_inventory(observed)
+        print(_format_result(args, {
+            "schema": "webchallscan/quick-v1",
+            "origin": observed["origin"],
+            "observed_requests": observed["observed_requests"],
+            "endpoints": observed["endpoints"],
+            "passive_findings": observed["passive_findings"],
+            "triage": plan["checks"],
+            "active_tests_executed": 0,
+            "limitations": observed["limitations"] + [
+                "No replayable bodies or independent roles were captured; IDOR and business-logic checks remain unverified."
+            ]
+        }, indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: quick discovery failed; check the focused CDP tab")
+
+
+def _handle_api_contract(args) -> int | None:
+    if args.validate_api_contract is None:
+        return None
+    if (args.from_inventory or not args.authorized
+            or _truthy(args, "cdp", "url", "session_file", "listen_session", "browser_session",
+                       "plan_inventory", "check_api_cases")
+            or args.observe_network is not None):
+        return _fail("error: --validate-api-contract requires --authorized and excludes other modes")
+    try:
+        print(_format_result(args, validate_contract(
+            load_contract(args.validate_api_contract), timeout=args.timeout,
+            verify_tls=not args.insecure, proxy=args.proxy), indent=2))
+        return 0
+    except (ValueError, OSError):
+        return _fail("error: contract validation failed; check inputs and connectivity")
+
+
+def _handle_api_cases(args) -> int | None:
+    if args.check_api_cases is None:
+        return None
+    if (args.from_inventory or not args.authorized
+            or _truthy(args, "cdp", "url", "session_file", "listen_session", "browser_session",
+                       "plan_inventory")
+            or args.observe_network is not None):
+        return _fail("error: --check-api-cases requires --authorized and excludes browser/scan modes")
+    try:
+        print(_format_result(args, run_readonly_cases(
+            load_cases(args.check_api_cases), args.timeout,
+            verify_tls=not args.insecure, proxy=args.proxy), indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: API check failed: {type(exc).__name__}")
+
+
+def _handle_plan_inventory(args) -> int | None:
+    if args.plan_inventory is None:
+        return None
+    if (args.from_inventory or not args.authorized or args.observe_network is not None
+            or _truthy(args, "cdp", "url", "listen_session", "session_file", "browser_session")):
+        return _fail("error: --plan-inventory requires --authorized and cannot be combined with a browser source")
+    try:
+        print(_format_result(args, plan_inventory(
+            load_inventory(args.plan_inventory), args.expect_origin), indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: {exc}")
+
+
+def _handle_observe_network(args) -> int | None:
+    if args.expect_origin:
+        return _fail("error: --expect-origin only applies to --plan-inventory")
+    if args.observe_network is None:
+        return None
+    if args.from_inventory or not args.authorized:
+        return _fail("error: --authorized is required")
+    if not args.cdp or _truthy(args, "url", "listen_session", "session_file", "browser_session"):
+        return _fail("error: --observe-network requires --cdp and no positional URL/session source")
+    try:
+        print("Observing focused tab: interact with it now...", file=sys.stderr, flush=True)
+        print(_format_result(args, observe_cdp(args.cdp, args.observe_network, args.observe_limit), indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: {exc}")
+
+
+def _check_scan_options(args) -> int | None:
+    if not args.authorized:
+        return _fail("error: --authorized is required; scan only targets you are permitted to test")
+    if (args.export_curl and args.export_python) or (args.burp_procedure and (args.export_curl or args.export_python)):
+        return _fail("error: choose only one of --burp-procedure, --export-curl or --export-python")
+    if args.ssti_alternates and not args.active:
+        return _fail("error: --ssti-alternates requires --active")
+    if args.burp_raw and not args.burp_procedure:
+        return _fail("error: --burp-raw requires --burp-procedure")
+    if args.include_session_secrets and not args.burp_procedure:
+        return _fail("error: --include-session-secrets requires --burp-procedure")
+    return None
+
+
+def _capture_session(args):
+    if args.session_file:
+        print("warning: session files contain secrets; restrict file access and delete them after use", file=sys.stderr)
+        return load_session_file(args.session_file)
+    if args.listen_session:
+        return listen_for_extension(args.session_wait)
+    if args.cdp:
+        return capture_cdp_session(args.cdp, min(args.timeout, 3.0))
+    if args.browser_session:
+        endpoint = discover_cdp(args.browser_session)
+        return capture_cdp_session(endpoint, min(args.timeout, 3.0))
+    return None
+
+
+def _scan_target(args, captured) -> str:
+    if not captured:
+        if not args.url:
+            raise ValueError("URL is required unless --browser-session, --cdp, or --session-file is used")
+        return args.url
+    if args.url:
+        from urllib.parse import urlsplit
+        requested = urlsplit(args.url)
+        selected = urlsplit(captured.url)
+        if (requested.scheme.lower(), requested.netloc.lower()) != (selected.scheme.lower(), selected.netloc.lower()):
+            raise ValueError("the supplied URL and active browser tab have different origins")
+    if args.profile != "both" and args.profile != captured.profile:
+        raise ValueError(f"captured tab is {captured.profile}; --profile {args.profile} would mislabel its session")
+    return captured.url
+
+
+def _scan_sessions(args, captured) -> dict | None:
+    if not captured:
+        return None
+    sessions = {captured.profile: captured}
+    if args.profile == "both":
+        other = "mobile" if captured.profile == "desktop" else "desktop"
+        sessions[other] = BrowserSession(
+            url=captured.url, cookies=captured.cookies, headers=(), profile=other,
+            source=captured.source + "-cookie-clone",
+        )
+    return sessions
+
+
+def _exit_code(report) -> int:
+    return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
+
+
+def _run_scan(args) -> tuple[object, int | None]:
+    """Return (report, early_exit_code); the code is set when output was already printed."""
+    captured = _capture_session(args)
+    target = _scan_target(args, captured)
+    profiles = ("desktop", "mobile") if args.profile == "both" else (args.profile,)
+    sessions = _scan_sessions(args, captured)
+    inventory_urls = inventory_get_urls(load_inventory(args.from_inventory), target) if args.from_inventory else ()
+    report = scan_profiles(target, profiles=profiles, active=args.active,
+                           max_pages=args.max_pages, max_requests=args.max_requests,
+                           timeout=args.timeout, verify_tls=not args.insecure,
+                           sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls,
+                           ssti_alternates=args.ssti_alternates,
+                           nosql_query=args.nosql_query)
+    if args.export_curl or args.export_python:
+        print(render_snippets(report, "curl" if args.export_curl else "python"))
+        return report, _exit_code(report)
+    if args.burp_procedure:
+        if args.include_session_secrets:
+            print("warning: the procedure will print live session cookie values; clear your terminal after use", file=sys.stderr)
+        print(render_burp_procedure(report, args.include_session_secrets, args.burp_raw))
+        return report, _exit_code(report)
+    return report, None
+
+
+def _print_report(args, report) -> None:
     if args.format == "json":
         print(render_json(report))
     elif args.format == "markdown":
@@ -440,7 +503,41 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(render_text(report, args.color, verbose=args.verbose,
                           top=args.top, min_severity=args.min_severity))
+
+
+_MODE_STEPS = (
+    _check_report_options,
+    _check_nosql_option,
+    _handle_extension_path,
+    _check_proxy_option,
+    _handle_source_map_audit,
+    _handle_session_audit,
+    _handle_burp_session_export,
+    _handle_jwt_audit,
+    _handle_burp_import,
+    _handle_json_cases,
+    _handle_quick,
+    _handle_api_contract,
+    _handle_api_cases,
+    _handle_plan_inventory,
+    _handle_observe_network,
+    _check_scan_options,
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
+    for step in _MODE_STEPS:
+        code = step(args)
+        if code is not None:
+            return code
+    try:
+        report, early = _run_scan(args)
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: {exc}")
+    if early is not None:
+        return early
+    _print_report(args, report)
     if report.pages_scanned == 0:
         return 3
-    return 1 if any(f.severity in {"critical", "high"} for f in report.findings) else 0
-
+    return _exit_code(report)

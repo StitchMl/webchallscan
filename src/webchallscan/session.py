@@ -74,7 +74,7 @@ def _json_get(url: str, timeout: float) -> Any:
         raise SessionCaptureError("CDP JSON response exceeds 2 MB")
     try:
         return json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise SessionCaptureError("invalid local CDP JSON response") from exc
 
 
@@ -115,38 +115,45 @@ class _WebSocket:
         )
         try:
             self.sock.sendall(request.encode("ascii"))
-            response = self._read_headers()
-            lines = response.split(b"\r\n")
-            if not lines or not lines[0].startswith(b"HTTP/1.1 101 "):
-                raise SessionCaptureError("CDP WebSocket upgrade was rejected")
-            headers: dict[bytes, list[bytes]] = {}
-            for line in lines[1:]:
-                if not line:
-                    break
-                name, separator, value = line.partition(b":")
-                if not separator:
-                    raise SessionCaptureError("invalid CDP WebSocket upgrade headers")
-                headers.setdefault(name.strip().lower(), []).append(value.strip())
-
-            def tokens(name: bytes) -> set[bytes]:
-                return {token.strip().lower()
-                        for value in headers.get(name, [])
-                        for token in value.split(b",")}
-
-            if (b"websocket" not in tokens(b"upgrade")
-                    or b"upgrade" not in tokens(b"connection")):
-                raise SessionCaptureError("CDP WebSocket upgrade headers are incomplete")
-            # RFC 6455 §4.2.2 mandates SHA-1 of a public nonce and fixed GUID.
-            # This is NOT password hashing, signing or security-grade hashing.
-            handshake = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
-            digest = hashlib.sha1(handshake, usedforsecurity=False).digest()  # NOSONAR: required by RFC 6455
-            expected = base64.b64encode(digest)
-            accept = headers.get(b"sec-websocket-accept", [])
-            if len(accept) != 1 or accept[0] != expected:
-                raise SessionCaptureError("CDP WebSocket handshake validation failed")
+            self._validate_upgrade(self._read_headers(), key)
         except (OSError, UnicodeEncodeError, SessionCaptureError):
             self.close()
             raise
+
+    @staticmethod
+    def _parse_upgrade_headers(response: bytes) -> dict[bytes, list[bytes]]:
+        lines = response.split(b"\r\n")
+        if not lines or not lines[0].startswith(b"HTTP/1.1 101 "):
+            raise SessionCaptureError("CDP WebSocket upgrade was rejected")
+        headers: dict[bytes, list[bytes]] = {}
+        for line in lines[1:]:
+            if not line:
+                break
+            name, separator, value = line.partition(b":")
+            if not separator:
+                raise SessionCaptureError("invalid CDP WebSocket upgrade headers")
+            headers.setdefault(name.strip().lower(), []).append(value.strip())
+        return headers
+
+    @staticmethod
+    def _header_tokens(headers: dict[bytes, list[bytes]], name: bytes) -> set[bytes]:
+        return {token.strip().lower()
+                for value in headers.get(name, [])
+                for token in value.split(b",")}
+
+    def _validate_upgrade(self, response: bytes, key: str) -> None:
+        headers = self._parse_upgrade_headers(response)
+        if (b"websocket" not in self._header_tokens(headers, b"upgrade")
+                or b"upgrade" not in self._header_tokens(headers, b"connection")):
+            raise SessionCaptureError("CDP WebSocket upgrade headers are incomplete")
+        # RFC 6455 section 4.2.2 mandates SHA-1 of a public nonce and fixed GUID.
+        # This is NOT password hashing, signing or security-grade hashing.
+        handshake = (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+        digest = hashlib.sha1(handshake, usedforsecurity=False).digest()
+        expected = base64.b64encode(digest)
+        accept = headers.get(b"sec-websocket-accept", [])
+        if len(accept) != 1 or accept[0] != expected:
+            raise SessionCaptureError("CDP WebSocket handshake validation failed")
 
     def _read_headers(self) -> bytes:
         # A single recv(4096) can consume the first WebSocket frame as well
@@ -184,31 +191,45 @@ class _WebSocket:
         encoded = bytes(value ^ mask[index % 4] for index, value in enumerate(data))
         self.sock.sendall(bytes(header) + mask + encoded)
 
-    def recv_json(self) -> dict[str, Any]:
+    def _read_frame_header(self) -> tuple[int, int]:
         # Local debugging ports can still be occupied by untrusted services.
         # Validate each announced frame size *before* allocating/reading it.
         max_frame = 2_000_000
+        first, second = self._exact(2)
+        opcode, length = first & 0x0F, second & 0x7F
+        complete = bool(first & 0x80)
+        if first & 0x70:
+            raise SessionCaptureError("CDP WebSocket uses unsupported frame extensions")
+        if second & 0x80:
+            raise SessionCaptureError("CDP WebSocket server frames must be unmasked")
+        if length == 126:
+            length = struct.unpack("!H", self._exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._exact(8))[0]
+        if length > max_frame:
+            raise SessionCaptureError("CDP WebSocket frame exceeds the 2 MB limit")
+        if opcode in (0x8, 0x9, 0xA):
+            if not complete or length > 125:
+                raise SessionCaptureError("invalid CDP WebSocket control frame")
+        elif opcode != 0x1 or not complete:
+            # A fragmented or binary frame must not silently be processed
+            # as JSON; CDP's JSON-RPC transport uses complete text frames.
+            raise SessionCaptureError("unsupported CDP WebSocket data frame")
+        return opcode, length
+
+    @staticmethod
+    def _decode_message(data: bytes) -> dict[str, Any]:
+        try:
+            message = json.loads(data.decode("utf-8"))
+        except ValueError as exc:
+            raise SessionCaptureError("invalid CDP WebSocket JSON response") from exc
+        if not isinstance(message, dict):
+            raise SessionCaptureError("CDP WebSocket JSON response must be an object")
+        return message
+
+    def recv_json(self) -> dict[str, Any]:
         while True:
-            first, second = self._exact(2)
-            opcode, length = first & 0x0F, second & 0x7F
-            complete = bool(first & 0x80)
-            if first & 0x70:
-                raise SessionCaptureError("CDP WebSocket uses unsupported frame extensions")
-            if second & 0x80:
-                raise SessionCaptureError("CDP WebSocket server frames must be unmasked")
-            if length == 126:
-                length = struct.unpack("!H", self._exact(2))[0]
-            elif length == 127:
-                length = struct.unpack("!Q", self._exact(8))[0]
-            if length > max_frame:
-                raise SessionCaptureError("CDP WebSocket frame exceeds the 2 MB limit")
-            if opcode in (0x8, 0x9, 0xA):
-                if not complete or length > 125:
-                    raise SessionCaptureError("invalid CDP WebSocket control frame")
-            elif opcode != 0x1 or not complete:
-                # A fragmented or binary frame must not silently be processed
-                # as JSON; CDP's JSON-RPC transport uses complete text frames.
-                raise SessionCaptureError("unsupported CDP WebSocket data frame")
+            opcode, length = self._read_frame_header()
             data = self._exact(length)
             if opcode == 0x8:
                 raise SessionCaptureError("CDP WebSocket closed unexpectedly")
@@ -217,13 +238,7 @@ class _WebSocket:
                 continue
             if opcode == 0xA:
                 continue
-            try:
-                message = json.loads(data.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError) as exc:
-                raise SessionCaptureError("invalid CDP WebSocket JSON response") from exc
-            if not isinstance(message, dict):
-                raise SessionCaptureError("CDP WebSocket JSON response must be an object")
-            return message
+            return self._decode_message(data)
 
     def _send_control(self, opcode: int, data: bytes) -> None:
         mask = os.urandom(4)
@@ -288,32 +303,35 @@ def validate_session_cookie(name: str, value: str,
         raise SessionCaptureError("invalid cookie path")
 
 
+_COOKIE_FIELDS = {"name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires"}
+
+
+def _parse_cookie(item: object) -> SessionCookie:
+    if not isinstance(item, dict) or set(item) - _COOKIE_FIELDS or not {"name", "value"} <= set(item):
+        raise SessionCaptureError("each cookie needs name/value and only documented fields")
+    if not isinstance(item["name"], str) or not isinstance(item["value"], str):
+        raise SessionCaptureError("cookie name and value must be strings")
+    validate_session_cookie(item["name"], item["value"],
+                            item.get("domain", ""), item.get("path", "/"))
+    if (type(item.get("secure", False)) is not bool
+            or type(item.get("httpOnly", False)) is not bool
+            or not isinstance(item.get("sameSite", ""), str)):
+        raise SessionCaptureError("invalid cookie security attributes")
+    expires = item.get("expires")
+    if expires is not None and not isinstance(expires, (int, float)):
+        raise SessionCaptureError("cookie expires must be a number or null")
+    return SessionCookie(
+        name=item["name"], value=item["value"], domain=str(item.get("domain", "")),
+        path=str(item.get("path", "/")), secure=bool(item.get("secure", False)),
+        http_only=bool(item.get("httpOnly", False)), same_site=str(item.get("sameSite", "")),
+        expires=int(expires) if expires and expires > 0 else None,
+    )
+
+
 def _parse_cookies(value: object) -> tuple[SessionCookie, ...]:
     if not isinstance(value, list) or len(value) > 500:
         raise SessionCaptureError("cookies must be a JSON array with at most 500 entries")
-    result: list[SessionCookie] = []
-    allowed = {"name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires"}
-    for item in value:
-        if not isinstance(item, dict) or set(item) - allowed or not {"name", "value"} <= set(item):
-            raise SessionCaptureError("each cookie needs name/value and only documented fields")
-        if not isinstance(item["name"], str) or not isinstance(item["value"], str):
-            raise SessionCaptureError("cookie name and value must be strings")
-        validate_session_cookie(item["name"], item["value"],
-                                item.get("domain", ""), item.get("path", "/"))
-        if (type(item.get("secure", False)) is not bool
-                or type(item.get("httpOnly", False)) is not bool
-                or not isinstance(item.get("sameSite", ""), str)):
-            raise SessionCaptureError("invalid cookie security attributes")
-        expires = item.get("expires")
-        if expires is not None and not isinstance(expires, (int, float)):
-            raise SessionCaptureError("cookie expires must be a number or null")
-        result.append(SessionCookie(
-            name=item["name"], value=item["value"], domain=str(item.get("domain", "")),
-            path=str(item.get("path", "/")), secure=bool(item.get("secure", False)),
-            http_only=bool(item.get("httpOnly", False)), same_site=str(item.get("sameSite", "")),
-            expires=int(expires) if expires and expires > 0 else None,
-        ))
-    return tuple(result)
+    return tuple(_parse_cookie(item) for item in value)
 
 
 def _safe_headers(value: object) -> tuple[tuple[str, str], ...]:
@@ -371,12 +389,10 @@ def load_session_file(path: str) -> BrowserSession:
     )
 
 
-def parse_extension_session(data: object, source: str = "browser-extension") -> BrowserSession:
-    if not isinstance(data, dict) or set(data) != {"schema", "active_tab", "browser", "cookies"}:
-        raise SessionCaptureError("browser session object has an invalid top-level shape")
-    if data.get("schema") != "webchallscan/browser-session-v1":
-        raise SessionCaptureError("unsupported browser session schema")
-    tab, browser, cookies = data["active_tab"], data["browser"], data["cookies"]
+_EXTENSION_COOKIE_FIELDS = {"name", "value", "domain", "path", "secure", "http_only", "same_site", "session", "expiration_date", "store_id", "partition_key"}
+
+
+def _check_extension_tab(tab: object) -> str:
     if not isinstance(tab, dict) or set(tab) != {"url", "origin", "incognito"}:
         raise SessionCaptureError("active_tab has an invalid shape")
     url = _valid_http_url(tab.get("url"))
@@ -384,40 +400,67 @@ def parse_extension_session(data: object, source: str = "browser-extension") -> 
     origin = f"{parsed.scheme}://{parsed.netloc}"
     if tab.get("origin") != origin or not isinstance(tab.get("incognito"), bool):
         raise SessionCaptureError("active_tab origin or incognito value is invalid")
+    return url
+
+
+def _check_extension_browser(browser: object) -> None:
     if not isinstance(browser, dict) or set(browser) != {"user_agent", "accept_language", "platform", "mobile"}:
         raise SessionCaptureError("browser context has an invalid shape")
     if any(not isinstance(browser[key], str) for key in ("user_agent", "accept_language", "platform")) or not isinstance(browser["mobile"], bool):
         raise SessionCaptureError("browser context values have invalid types")
+
+
+def _check_partition_key(partition: object) -> None:
+    if partition is None:
+        return
+    if not isinstance(partition, dict) or set(partition) != {"top_level_site", "has_cross_site_ancestor"}:
+        raise SessionCaptureError("browser cookie partition key is invalid")
+    if not isinstance(partition["top_level_site"], str) or not isinstance(partition["has_cross_site_ancestor"], bool):
+        raise SessionCaptureError("browser cookie partition key values are invalid")
+
+
+def _check_extension_cookie(raw: object) -> None:
+    if not isinstance(raw, dict) or set(raw) != _EXTENSION_COOKIE_FIELDS:
+        raise SessionCaptureError("browser cookie has an invalid shape")
+    _check_partition_key(raw["partition_key"])
+    if any(not isinstance(raw[key], str) for key in ("name", "value", "domain", "path", "same_site", "store_id")):
+        raise SessionCaptureError("browser cookie string fields are invalid")
+    if any(not isinstance(raw[key], bool) for key in ("secure", "http_only", "session")):
+        raise SessionCaptureError("browser cookie boolean fields are invalid")
+    expiry = raw["expiration_date"]
+    if expiry is not None and not isinstance(expiry, (int, float)):
+        raise SessionCaptureError("browser cookie expiration is invalid")
+
+
+def _normalize_extension_cookies(cookies: object) -> list[dict[str, Any]]:
     if not isinstance(cookies, list) or len(cookies) > 500:
         raise SessionCaptureError("cookies must be an array with at most 500 entries")
     normalized = []
     seen = set()
-    expected = {"name", "value", "domain", "path", "secure", "http_only", "same_site", "session", "expiration_date", "store_id", "partition_key"}
     for raw in cookies:
-        if not isinstance(raw, dict) or set(raw) != expected:
-            raise SessionCaptureError("browser cookie has an invalid shape")
-        partition = raw["partition_key"]
-        if partition is not None:
-            if not isinstance(partition, dict) or set(partition) != {"top_level_site", "has_cross_site_ancestor"}:
-                raise SessionCaptureError("browser cookie partition key is invalid")
-            if not isinstance(partition["top_level_site"], str) or not isinstance(partition["has_cross_site_ancestor"], bool):
-                raise SessionCaptureError("browser cookie partition key values are invalid")
-        if any(not isinstance(raw[key], str) for key in ("name", "value", "domain", "path", "same_site", "store_id")):
-            raise SessionCaptureError("browser cookie string fields are invalid")
-        if any(not isinstance(raw[key], bool) for key in ("secure", "http_only", "session")):
-            raise SessionCaptureError("browser cookie boolean fields are invalid")
-        expiry = raw["expiration_date"]
-        if expiry is not None and not isinstance(expiry, (int, float)):
-            raise SessionCaptureError("browser cookie expiration is invalid")
-        key = (raw["name"], raw["domain"], raw["path"], raw["store_id"], json.dumps(partition, sort_keys=True))
+        _check_extension_cookie(raw)
+        key = (raw["name"], raw["domain"], raw["path"], raw["store_id"],
+               json.dumps(raw["partition_key"], sort_keys=True))
         if key in seen:
             raise SessionCaptureError("browser session contains duplicate cookies")
         seen.add(key)
         normalized.append({
             "name": raw["name"], "value": raw["value"], "domain": raw["domain"],
             "path": raw["path"], "secure": raw["secure"], "httpOnly": raw["http_only"],
-            "sameSite": raw["same_site"], "expires": expiry,
+            "sameSite": raw["same_site"], "expires": raw["expiration_date"],
         })
+    return normalized
+
+
+def parse_extension_session(data: object, source: str = "browser-extension") -> BrowserSession:
+    if not isinstance(data, dict) or set(data) != {"schema", "active_tab", "browser", "cookies"}:
+        raise SessionCaptureError("browser session object has an invalid top-level shape")
+    if data.get("schema") != "webchallscan/browser-session-v1":
+        raise SessionCaptureError("unsupported browser session schema")
+    tab, browser, cookies = data["active_tab"], data["browser"], data["cookies"]
+    url = _check_extension_tab(tab)
+    _check_extension_browser(browser)
+    normalized = _normalize_extension_cookies(cookies)
     headers = {}
     if browser["user_agent"]:
         headers["User-Agent"] = browser["user_agent"]
@@ -445,13 +488,14 @@ def listen_for_extension(timeout: float = 120.0) -> BrowserSession:
                     raise SessionCaptureError("invalid browser session body size")
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 state["session"] = parse_extension_session(payload)
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, SessionCaptureError):
+            except ValueError:
                 self.send_error(400); return
             self.send_response(204)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
 
         def log_message(self, *_: object) -> None:
+            # Stay silent: request logging would echo the one-shot token endpoint traffic.
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -480,12 +524,44 @@ def discover_cdp(browser: str, timeout: float = 0.6) -> str:
                 version = _json_get(endpoint + "/json/version", timeout)
                 if isinstance(version, dict) and version.get("webSocketDebuggerUrl"):
                     return endpoint
-            except (OSError, ValueError, json.JSONDecodeError):
+            except (OSError, ValueError):
                 continue
     raise SessionCaptureError(
         "no debuggable Chrome/Edge session found; start the browser with --remote-debugging-port=9222 "
         "or pass --cdp http://127.0.0.1:PORT"
     )
+
+
+def _probe_page_tab(index: int, target: object, timeout: float):
+    """Return a ranked candidate tuple for a usable page tab, else None."""
+    if not isinstance(target, dict) or target.get("type") != "page":
+        return None
+    try:
+        url = _valid_http_url(target.get("url"))
+        websocket = str(target["webSocketDebuggerUrl"])
+        client = _CDP(websocket, timeout)
+        state = client.call("Runtime.evaluate", {"expression": (
+            "JSON.stringify({focus:document.hasFocus(),visibility:document.visibilityState,"
+            "ua:navigator.userAgent,language:navigator.language})"), "returnByValue": True})
+        raw = state.get("result", {}).get("value", "{}")
+        facts = json.loads(raw) if isinstance(raw, str) else {}
+        client.close()
+        rank = (0 if facts.get("focus") else 1, 0 if facts.get("visibility") == "visible" else 1)
+        return (rank, index, {**target, "url": url}, facts)
+    except (KeyError, OSError, ValueError):
+        return None
+
+
+def _page_cookies(target: dict[str, Any], timeout: float) -> tuple[SessionCookie, ...]:
+    client = _CDP(str(target["webSocketDebuggerUrl"]), timeout)
+    try:
+        raw_cookies = client.call("Network.getCookies", {"urls": [target["url"]]}).get("cookies", [])
+    finally:
+        client.close()
+    return _parse_cookies([{
+        key: item[key] for key in ("name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires")
+        if key in item
+    } for item in raw_cookies if isinstance(item, dict)])
 
 
 def capture_cdp_session(endpoint: str, timeout: float = 2.0) -> BrowserSession:
@@ -497,39 +573,15 @@ def capture_cdp_session(endpoint: str, timeout: float = 2.0) -> BrowserSession:
         raise SessionCaptureError("cannot query the local CDP endpoint") from exc
     if not isinstance(targets, list):
         raise SessionCaptureError("CDP target list is invalid")
-    candidates: list[tuple[tuple[int, int], int, dict[str, Any], dict[str, Any]]] = []
-    for index, target in enumerate(targets):
-        if not isinstance(target, dict) or target.get("type") != "page":
-            continue
-        try:
-            url = _valid_http_url(target.get("url"))
-            websocket = str(target["webSocketDebuggerUrl"])
-            client = _CDP(websocket, timeout)
-            state = client.call("Runtime.evaluate", {"expression": (
-                "JSON.stringify({focus:document.hasFocus(),visibility:document.visibilityState,"
-                "ua:navigator.userAgent,language:navigator.language})"), "returnByValue": True})
-            raw = state.get("result", {}).get("value", "{}")
-            facts = json.loads(raw) if isinstance(raw, str) else {}
-            client.close()
-            rank = (0 if facts.get("focus") else 1, 0 if facts.get("visibility") == "visible" else 1)
-            candidates.append((rank, index, {**target, "url": url}, facts))
-        except (KeyError, OSError, ValueError, json.JSONDecodeError, SessionCaptureError):
-            continue
+    probed = (_probe_page_tab(index, target, timeout) for index, target in enumerate(targets))
+    candidates = [candidate for candidate in probed if candidate is not None]
     if not candidates:
         raise SessionCaptureError("CDP exposes no accessible HTTP(S) page tabs")
     candidates.sort(key=lambda item: (item[0], item[1]))
     if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
         raise SessionCaptureError("CDP cannot identify one active page; focus the challenge tab and retry")
     _, _, target, facts = candidates[0]
-    client = _CDP(str(target["webSocketDebuggerUrl"]), timeout)
-    try:
-        raw_cookies = client.call("Network.getCookies", {"urls": [target["url"]]}).get("cookies", [])
-    finally:
-        client.close()
-    cookies = _parse_cookies([{
-        key: item[key] for key in ("name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "expires")
-        if key in item
-    } for item in raw_cookies if isinstance(item, dict)])
+    cookies = _page_cookies(target, timeout)
     ua = facts.get("ua") if isinstance(facts.get("ua"), str) else ""
     language = facts.get("language") if isinstance(facts.get("language"), str) else ""
     headers = {}
