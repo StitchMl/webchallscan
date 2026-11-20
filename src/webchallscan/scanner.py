@@ -577,12 +577,14 @@ class Scanner:
         return urlunsplit((p.scheme, p.netloc, p.path, urlencode(out), ""))
 
     def _send_probe(self, finding: Finding, value: str) -> Response:
-        fields = dict(finding.request_fields)
-        fields[finding.parameter] = value
+        fields = [(name, value if name == finding.parameter else default)
+                  for name, default in finding.request_fields]
+        if not any(name == finding.parameter for name, _ in fields):
+            fields.append((finding.parameter, value))
         if finding.method == "POST":
             return self._request(finding.url, "POST", urlencode(fields).encode())
         url = finding.url
-        for key, field_value in fields.items():
+        for key, field_value in dict(fields).items():
             url = self._set_query(url, key, field_value)
         return self._request(url)
 
