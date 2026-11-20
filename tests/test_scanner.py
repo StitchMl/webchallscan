@@ -625,3 +625,25 @@ def test_passive_jwt_discovery_ignores_invalid_strings(server):
     assert scanner._jwt_metadata_hints(Response(
         server + "/", 200, {}, "eyJinvalid.eyJinvalid.signature"
     )) == []
+
+
+def test_textarea_defaults_preserve_content_and_form_boundaries():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed("""
+    <form method="post" action="/submit">
+      <textarea name="note">hello &amp; goodbye\n  second line</textarea>
+      <textarea name="blank"></textarea>
+      <input name="token" value="kept">
+    </form>
+    <form method="get" action="/other">
+      <textarea name="other">another value</textarea>
+    </form>
+    """)
+    assert parser.forms[0].inputs == [
+        ("note", "textarea", "hello & goodbye\n  second line"),
+        ("blank", "textarea", ""),
+        ("token", "text", "kept"),
+    ]
+    assert parser.forms[1].inputs == [("other", "textarea", "another value")]
