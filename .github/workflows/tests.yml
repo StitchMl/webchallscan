@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m webchallscan --version
           python -m webchallscan --help
-          python -m webchallscan json --help
+          python -m webchallscan json example.json --help
       - name: Run regression tests with coverage
         run: python -m coverage run --source=webchallscan --branch -m pytest -q
       - name: Write coverage report
