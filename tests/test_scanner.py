@@ -820,3 +820,59 @@ def test_starttag_dispatch_preserves_links_scripts_and_mixed_form_controls():
         ("note", "textarea", "hello & world"),
         ("cmd", "text", "default"),
     ]
+
+
+def test_get_probe_preserves_action_query_and_repeated_form_order(server):
+    from urllib.parse import parse_qsl
+
+    from webchallscan.scanner import Response
+
+    scanner = Scanner(server + "/repeated-get-form")
+    target = server + "/repeated-get-run?source=action"
+    defaults = (("cmd", "default"), ("scope", "read"), ("scope", "write"))
+    finding = scanner._parameter_hypotheses(
+        target, "GET", "cmd", defaults, generic=True,
+    )[0]
+    observed = []
+
+    def capture(url, method="GET", data=None):
+        observed.append((url, method, data))
+        return Response(url, 200, {}, "ok")
+
+    scanner._request = capture
+    scanner._send_probe(finding, CMD_PROBE)
+    assert parse_qsl(urlsplit(observed[0][0]).query) == [
+        ("source", "action"),
+        ("cmd", CMD_PROBE),
+        ("scope", "read"),
+        ("scope", "write"),
+    ]
+    assert observed[0][1:] == ("GET", None)
+
+
+def test_get_probe_replaces_every_repeated_target_without_dropping_neighbors(server):
+    from urllib.parse import parse_qsl
+
+    from webchallscan.scanner import Response
+
+    target = server + "/run?cmd=first&scope=read&cmd=second&scope=write"
+    scanner = Scanner(target)
+    defaults = (
+        ("cmd", "first"), ("scope", "read"),
+        ("cmd", "second"), ("scope", "write"),
+    )
+    finding = scanner._parameter_hypotheses(
+        target, "GET", "cmd", defaults, generic=True,
+    )[0]
+    observed = []
+
+    def capture(url, method="GET", data=None):
+        observed.append(url)
+        return Response(url, 200, {}, "ok")
+
+    scanner._request = capture
+    scanner._send_probe(finding, CMD_PROBE)
+    assert parse_qsl(urlsplit(observed[0]).query) == [
+        ("cmd", CMD_PROBE), ("scope", "read"),
+        ("cmd", CMD_PROBE), ("scope", "write"),
+    ]
