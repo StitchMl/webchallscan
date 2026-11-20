@@ -69,6 +69,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send("session-ok" if "wcs_session=valid" in self.headers.get("Cookie", "") else "denied", 200 if "wcs_session=valid" in self.headers.get("Cookie", "") else 403)
         elif p.path == "/form":
             self._send('<html><form action="/postrun" method="post"><input type="hidden" name="csrf" value="token-42"><input name="cmd" value="default"></form></html>')
+        elif p.path == "/textarea-form":
+            self._send('<html><form action="/textarea-run" method="post">'
+                       '<input type="hidden" name="csrf" value="token-42">'
+                       '<textarea name="note">hello &amp; goodbye</textarea>'
+                       '<input name="cmd" value="default"></form></html>')
         elif p.path == "/flag":
             self._send("CTF{unit_test_only}")
         elif p.path == "/profiles":
@@ -89,7 +94,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         values = parse_qs(self.rfile.read(length).decode())
-        if self.path == "/postrun" and values.get("csrf") == ["token-42"] and values.get("cmd") == [CMD_PROBE]:
+        if (self.path == "/textarea-run" and values.get("csrf") == ["token-42"]
+                and values.get("note") == ["hello & goodbye"]
+                and values.get("cmd") == [CMD_PROBE]):
+            self._send(CMD_RESULT)
+        elif self.path == "/textarea-run":
+            self._send("denied", 403)
+        elif self.path == "/postrun" and values.get("csrf") == ["token-42"] and values.get("cmd") == [CMD_PROBE]:
             self._send(CMD_RESULT)
         else:
             self._send("denied", 403)
@@ -647,3 +658,19 @@ def test_textarea_defaults_preserve_content_and_form_boundaries():
         ("token", "text", "kept"),
     ]
     assert parser.forms[1].inputs == [("other", "textarea", "another value")]
+
+
+def test_active_post_preserves_textarea_defaults_without_exceeding_request_budget(server):
+    scanner = Scanner(server + "/textarea-form", active=True,
+                      max_pages=1, max_requests=24)
+    report = scanner.scan()
+    confirmed = [finding for finding in report.findings
+                 if finding.rule == "WEB-CMDI-001"
+                 and finding.exploit_status == "payload-ready"
+                 and finding.parameter == "cmd"]
+    assert confirmed
+    assert confirmed[0].method == "POST"
+    assert ("note", "hello & goodbye") in confirmed[0].request_fields
+    assert ("csrf", "token-42") in confirmed[0].request_fields
+    assert report.requests_sent <= 24
+    assert report.pages_scanned == 1
