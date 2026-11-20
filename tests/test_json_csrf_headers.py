@@ -42,5 +42,10 @@ def test_other_explicit_csrf_header_names_are_accepted(header, value):
     ("X-XSRF-Token", "A" * 4097),
 ])
 def test_untrusted_headers_are_rejected_before_network(header, value):
+    contract = sample({header: value})
+
+    def forbidden_send(*args):
+        pytest.fail("network called")
+
     with pytest.raises(ValueError):
-        run_json_cases(sample({header: value}), send=lambda *a: pytest.fail("network called"))
+        run_json_cases(contract, send=forbidden_send)

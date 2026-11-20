@@ -64,9 +64,10 @@ def test_business_status_invariant():
 
 
 def test_cross_origin_path_and_write_operations_not_supported():
+    contract = source([{"kind": "business", "path": "//evil.test/",
+                        "role": "owner", "expected_statuses": [200]}])
     with pytest.raises(ValueError):
-        validate_contract(source([{"kind": "business", "path": "//evil.test/",
-                                   "role": "owner", "expected_statuses": [200]}]))
+        validate_contract(contract)
 
 def test_api_client_respects_explicit_tls_override(monkeypatch):
     import ssl
@@ -88,4 +89,5 @@ def test_api_client_respects_explicit_tls_override(monkeypatch):
     api_contract._fetch("https://lab.example/", {}, 5, verify_tls=False)
     assert not any(isinstance(h, api_contract.HTTPSHandler) for h in seen[0])
     contexts = [h._context for h in seen[1] if isinstance(h, api_contract.HTTPSHandler)]
-    assert len(contexts) == 1 and contexts[0].verify_mode == ssl.CERT_NONE
+    assert len(contexts) == 1
+    assert contexts[0].verify_mode == ssl.CERT_NONE

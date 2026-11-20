@@ -46,15 +46,21 @@ def test_compact_report_has_summary_groups_and_focuses_on_actionable_fields():
     report = sample()
     value = render_text(report, "never")
     assert "FINDINGS OVERVIEW" in value
-    assert "HIGH 1" in value and "MEDIUM 1" in value and "INFO 1" in value
+    assert "HIGH 1" in value
+    assert "MEDIUM 1" in value
+    assert "INFO 1" in value
     assert value.index("SQL injection error") < value.index("Content Security Policy absent")
-    assert "Target" in value and "Evidence" in value and "Fix" in value
+    assert "Target" in value
+    assert "Evidence" in value
+    assert "Fix" in value
     assert "Proof" in value
     assert "Replay" not in value
     assert "Flag path" not in value
     assert "Tip: use --verbose" in value
-    assert "COVERAGE NOTES" in value and "REQUEST ERRORS" in value
-    assert "PRIVATE" not in value and "SECRET" not in value
+    assert "COVERAGE NOTES" in value
+    assert "REQUEST ERRORS" in value
+    assert "PRIVATE" not in value
+    assert "SECRET" not in value
     assert not ANSI_PATTERN.search(value)
 
 

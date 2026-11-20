@@ -64,8 +64,10 @@ def test_http_error_is_returned_without_retry_and_is_capped():
 
 
 def test_limits_and_redirect_policy():
+    opener = FakeOpener()
+    request = Request("http://localhost/")
     with pytest.raises(ValueError):
-        read_bounded(FakeOpener(), Request("http://localhost/"), 3, -1)
+        read_bounded(opener, request, 3, -1)
     handler = NoRedirect()
     assert handler.redirect_request(None, None, 302, "redirect", {},
                                     "http://elsewhere.invalid/") is None

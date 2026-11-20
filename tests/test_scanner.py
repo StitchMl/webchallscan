@@ -96,7 +96,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def server():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -117,8 +117,10 @@ def test_active_confirms_without_flag_extraction(server):
     report = Scanner(server, active=True, max_pages=5).scan()
     sql = [f for f in report.findings if f.title == "SQL injection error behavior confirmed"]
     cmd = [f for f in report.findings if f.title == "Command injection arithmetic execution confirmed"]
-    assert sql and sql[0].confidence == "high"
-    assert cmd and cmd[0].exploit_status == "payload-ready"
+    assert sql
+    assert sql[0].confidence == "high"
+    assert cmd
+    assert cmd[0].exploit_status == "payload-ready"
     assert "cat /flag" in cmd[0].vector
     assert CMD_PROBE in cmd[0].vector
     assert all("unit_test_only" not in f.evidence for f in report.findings)
@@ -127,14 +129,16 @@ def test_active_confirms_without_flag_extraction(server):
 def test_passive_flag_is_only_a_candidate(server):
     report = Scanner(server + "/flag", max_pages=1).scan()
     found = [f for f in report.findings if f.rule == "WEB-FLAG-CANDIDATE-001"]
-    assert found and found[0].exploit_status == "validation-only"
+    assert found
+    assert found[0].exploit_status == "validation-only"
 
 
 def test_boolean_sqli_is_found_with_an_opaque_parameter_name(server):
     report = Scanner(server + "/opaque-sql?x7=hello", active=True, max_pages=1,
                      max_requests=12).scan()
     found = [f for f in report.findings if f.title == "SQL injection boolean behavior confirmed"]
-    assert found and found[0].parameter == "x7"
+    assert found
+    assert found[0].parameter == "x7"
     assert found[0].confidence == "high"
     assert found[0].exploit_status == "validation-only"
 
@@ -151,7 +155,8 @@ def test_ssti_requires_a_server_computed_result(server):
                         max_requests=12).scan()
     ready = [f for f in confirmed.findings if f.rule == "WEB-SSTI-001"
              and f.exploit_status == "payload-ready"]
-    assert ready and "cat /flag" in ready[0].recovery_payload
+    assert ready
+    assert "cat /flag" in ready[0].recovery_payload
 
     reflected = Scanner(server + "/reflect?message=hello", active=True, max_pages=1,
                         max_requests=12).scan()
@@ -164,7 +169,9 @@ def test_reflected_xss_confirmed_on_unencoded_reflection(server):
                      max_requests=20).scan()
     xss = [f for f in report.findings if f.rule == "WEB-XSS-001"
            and f.title == "Reflected HTML/script injection confirmed"]
-    assert xss and xss[0].severity == "high" and xss[0].confidence == "high"
+    assert xss
+    assert xss[0].severity == "high"
+    assert xss[0].confidence == "high"
     assert xss[0].parameter == "message"
 
 
@@ -235,7 +242,8 @@ def test_both_profiles_find_distinct_surfaces_and_are_deterministic(server):
     mobile_cmd = [finding for finding in first.findings
                   if finding.profile == "mobile" and finding.title == "Command injection arithmetic execution confirmed"]
     assert desktop_sql
-    assert mobile_cmd and mobile_cmd[0].exploit_status == "payload-ready"
+    assert mobile_cmd
+    assert mobile_cmd[0].exploit_status == "payload-ready"
     difference = next(finding for finding in first.findings if finding.rule == "WEB-PROFILE-DIFF-001")
     assert "sha256:" in difference.evidence
     assert "parameters desktop=['q'], mobile=['cmd']" in difference.evidence
@@ -597,7 +605,8 @@ def test_passive_jwt_discovery_from_response_and_cookies_redacts_values(server):
     assert finding.severity == "info"
     assert finding.exploit_status == "validation-only"
     assert "JWT-ALG-NONE" in finding.evidence
-    assert "cookie" in finding.evidence and "response" in finding.evidence
+    assert "cookie" in finding.evidence
+    assert "response" in finding.evidence
     public = repr(finding.to_dict())
     for secret in (jwt, "private@example.com", "ADMINSECRET", "PRIVATE", "SIG_PRIVATE_7253"):
         assert secret not in public

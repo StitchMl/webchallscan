@@ -9,7 +9,7 @@ import pytest
 from webchallscan import api_contract, json_checks
 
 
-@pytest.fixture()
+@pytest.fixture
 def local_proxy(monkeypatch):
     # Guarantee the .invalid test origin does not bypass the test proxy.
     monkeypatch.setattr(urllib_request, "proxy_bypass", lambda host: False)

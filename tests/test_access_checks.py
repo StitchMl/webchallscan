@@ -18,7 +18,8 @@ def test_role_comparison_is_not_claimed_as_proven_idor(monkeypatch):
     })
     assert report["requests_sent"] == 2
     assert report["findings"][0]["status"] == "manual-validation-required"
-    assert "Bearer A" not in repr(report) and "Bearer B" not in repr(report)
+    assert "Bearer A" not in repr(report)
+    assert "Bearer B" not in repr(report)
     assert len(calls) == 2
 
 
@@ -62,4 +63,5 @@ def test_readonly_client_tls_opt_in(monkeypatch):
     access_checks._digest_response("https://lab.example/", {}, 5, verify_tls=False)
     assert not any(isinstance(h, access_checks.HTTPSHandler) for h in seen[0])
     contexts = [h._context for h in seen[1] if isinstance(h, access_checks.HTTPSHandler)]
-    assert len(contexts) == 1 and contexts[0].verify_mode == ssl.CERT_NONE
+    assert len(contexts) == 1
+    assert contexts[0].verify_mode == ssl.CERT_NONE

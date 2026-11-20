@@ -8,7 +8,7 @@ import pytest
 from webchallscan.session import SessionCaptureError, _json_get
 
 
-@pytest.fixture()
+@pytest.fixture
 def local_cdp():
     requests = []
 

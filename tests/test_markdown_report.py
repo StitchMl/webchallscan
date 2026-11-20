@@ -49,7 +49,8 @@ def test_markdown_verbose_and_top_are_presentation_only():
     assert "1 finding detail(s) omitted" in short
     assert "Passive \\<review" not in short
     verbose = render_markdown(report, verbose=True)
-    assert "Replay:" in verbose and "Vector:" in verbose
+    assert "Replay:" in verbose
+    assert "Vector:" in verbose
     assert before == render_json(report)
     assert len(json.loads(before)["findings"]) == 2
 
