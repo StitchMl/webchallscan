@@ -1,7 +1,9 @@
-"""Offline metadata-only JWT inspection (no signature verification)."""
+"""Offline JWT metadata audit with bounded checks for a few known weak HMAC keys."""
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -11,6 +13,31 @@ from pathlib import Path
 _ALLOWED_B64URL = re.compile(r"^[A-Za-z0-9_-]+$")
 MAX_TOKEN_BYTES = 16_384
 MAX_SECTION_BYTES = 8_192
+
+# A fixed, intentionally tiny offline diagnostic set; not a password dictionary.
+_COMMON_HMAC_KEYS = (b"secret", b"123456")
+_HMAC_ALGORITHMS = {"HS256": hashlib.sha256, "HS384": hashlib.sha384,
+                    "HS512": hashlib.sha512}
+
+
+def _known_weak_hmac_key(token: str, algorithm: str) -> bool:
+    digest = _HMAC_ALGORITHMS.get(algorithm)
+    if digest is None:
+        return False
+    encoded_signature = token.rsplit(".", 1)[1]
+    try:
+        signature = base64.b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4),
+            altchars=b"-_", validate=True,
+        )
+    except ValueError:
+        return False
+    if len(signature) != digest().digest_size:
+        return False
+    signed_data = token.rsplit(".", 1)[0].encode("ascii")
+    return any(hmac.compare_digest(
+        hmac.new(key, signed_data, digest).digest(), signature,
+    ) for key in _COMMON_HMAC_KEYS)
 
 
 def _decode_json_part(value: str) -> dict:
@@ -54,8 +81,14 @@ def audit_jwt(token: str) -> dict:
     if alg.upper().startswith("HS"):
         signals.append({
             "rule": "JWT-HMAC-REVIEW", "severity": "info",
-            "evidence": "HMAC-signed JWT: review key strength and algorithm allowlist; no key test was run.",
+            "evidence": "HMAC-signed JWT: review key strength and algorithm allowlist.",
         })
+        if _known_weak_hmac_key(token, alg):
+            signals.append({
+                "rule": "JWT-HMAC-KNOWN-WEAK-KEY", "severity": "medium",
+                "evidence": ("JWT signature matches a fixed, commonly used weak HMAC key offline; "
+                             "server acceptance and token validity are not established."),
+            })
     sensitive_claims = sorted(k for k in claims if k.lower() in {
         "role", "roles", "admin", "is_admin", "isadmin", "permissions", "scope",
         "user_id", "uid", "sub", "file", "path",
@@ -74,7 +107,7 @@ def audit_jwt(token: str) -> dict:
         "signals": signals,
         "active_tests_executed": 0,
         "limitations": [
-            "Offline structure inspection only; no signature or issuer verification.",
+            "Only a tiny fixed set of weak HMAC keys is checked; no general signature, issuer or audience verification.",
             "No token values, signing keys or claim values are included in the result.",
             "Algorithm metadata alone does not establish authentication bypass.",
         ],

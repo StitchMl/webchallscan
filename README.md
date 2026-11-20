@@ -388,6 +388,12 @@ session file and delete it after use.
 
 ### Offline JWT metadata audit
 
+The offline audit also checks a **fixed, tiny set of commonly used weak HMAC
+keys** for HS256/HS384/HS512. A matching signature produces the redacted
+`JWT-HMAC-KNOWN-WEAK-KEY` review signal; no key, token, claim value or
+signature is printed. This is not general key recovery, does not query a
+server, and cannot establish that the server accepts the token.
+
 Store a JWT from an authorized test in a private local file and run:
 
 ```bash

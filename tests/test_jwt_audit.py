@@ -91,3 +91,36 @@ def test_jwt_file_refuses_outside_workspace_and_invalid_encoding(tmp_path, monke
     malformed.write_bytes(bytes([255, 254]))
     with pytest.raises(ValueError, match="encoding"):
         audit_jwt_file("malformed.jwt")
+
+
+def test_offline_hmac_verifies_only_known_weak_signing_keys():
+    def sign(key, algorithm="HS256"):
+        def encode(value):
+            return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+        message = encode({"alg": algorithm}) + "." + encode({"sub": "PRIVATE_SUBJECT"})
+        digest = {"HS256": hashlib.sha256, "HS384": hashlib.sha384,
+                  "HS512": hashlib.sha512}[algorithm]
+        signature = base64.urlsafe_b64encode(
+            hmac.new(key, message.encode(), digest).digest(),
+        ).decode().rstrip("=")
+        return message + "." + signature
+
+    for algorithm in ("HS256", "HS384", "HS512"):
+        weak = sign(b"secret", algorithm)
+        strong = sign(b"an-independently-generated-long-test-secret", algorithm)
+        weak_report = audit_jwt(weak)
+        strong_report = audit_jwt(strong)
+        assert "JWT-HMAC-KNOWN-WEAK-KEY" in {item["rule"] for item in weak_report["signals"]}
+        assert "JWT-HMAC-KNOWN-WEAK-KEY" not in {item["rule"] for item in strong_report["signals"]}
+        assert weak_report["active_tests_executed"] == 0
+        assert weak not in repr(weak_report)
+        assert "PRIVATE_SUBJECT" not in repr(weak_report)
+        assert "secret" not in repr(weak_report)
+
+
+def test_hmac_wrong_signature_and_unsupported_algorithms_do_not_trigger_weak_key():
+    invalid = token({"alg": "HS256"}, {"role": "PRIVATE"})
+    unknown = token({"alg": "HS1024"}, {"role": "PRIVATE"})
+    for raw in (invalid, unknown):
+        report = audit_jwt(raw)
+        assert "JWT-HMAC-KNOWN-WEAK-KEY" not in {item["rule"] for item in report["signals"]}
