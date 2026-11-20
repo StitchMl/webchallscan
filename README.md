@@ -286,6 +286,17 @@ paths into optional `json_field_paths` review entries and a
 `manual-json-body-field-review` checklist. The human plan view displays
 the number of fields; no JSON values or active payloads are generated.
 
+For explicitly authorized JSON POST validation, the equivalent command-style
+interface is:
+
+```bash
+webchallscan json cases.json --authorized --active
+```
+
+This delegates to the existing bounded `--check-json-cases` workflow. It
+never converts passive inventory hints into active POSTs automatically and
+retains the same origin, TLS, redirect, redaction and request-budget rules.
+
 These are **manual review candidates**, not executable test cases.
 The existing `--check-json-cases` command still requires an independently
 prepared file and explicit `--authorized --active` approval. No captured

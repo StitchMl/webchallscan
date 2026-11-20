@@ -76,3 +76,30 @@ def test_root_flags_stay_unchanged_with_subparsers():
     assert _command_arguments(["observe", "--observe-network", "2", "--authorized"]) == [
         "--observe-network", "2", "--authorized",
     ]
+
+
+def test_json_command_reuses_explicit_authorized_active_mode(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(cli, "load_json_cases", lambda path: {"filename": path})
+    monkeypatch.setattr(cli, "run_json_cases", lambda cases, **kwargs:
+                        calls.append((cases, kwargs)) or {"requests_sent": 0, "cases": []})
+    assert cli.main(["json", "cases.json", "--authorized"]) == 2
+    assert cli.main(["json", "cases.json", "--active"]) == 2
+    assert calls == []
+    assert cli.main(["json", "cases.json", "--authorized", "--active"]) == 0
+    assert calls[0][0] == {"filename": "cases.json"}
+    assert calls[0][1]["verify_tls"] is True
+    assert "requests_sent" in capsys.readouterr().out
+
+
+def test_json_command_preserves_legacy_equivalent_arguments():
+    from webchallscan.cli import _command_arguments, parser
+
+    args = parser().parse_args(_command_arguments([
+        "json", "cases.json", "--authorized", "--active", "--insecure",
+    ]))
+    assert args.check_json_cases == "cases.json"
+    assert args.authorized and args.active and args.insecure
+    assert parser().parse_args(_command_arguments([
+        "--check-json-cases", "cases.json", "--authorized", "--active",
+    ])).check_json_cases == "cases.json"

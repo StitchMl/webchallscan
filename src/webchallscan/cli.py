@@ -105,11 +105,11 @@ def _extension_path() -> Path:
 
 def _command_arguments(argv: list[str]) -> list[str]:
     """Parse optional subcommands while retaining legacy root-level options."""
-    if not argv or argv[0] not in {"scan", "observe", "contract", "replay"}:
+    if not argv or argv[0] not in {"scan", "observe", "contract", "replay", "json"}:
         return argv
     commands = argparse.ArgumentParser(prog="webchallscan", add_help=False)
     subparsers = commands.add_subparsers(dest="command", required=True)
-    for command in ("scan", "observe", "contract", "replay"):
+    for command in ("scan", "observe", "contract", "replay", "json"):
         subparser = subparsers.add_parser(command, add_help=False)
         subparser.add_argument("arguments", nargs=argparse.REMAINDER)
     parsed = commands.parse_args(argv[:1])
@@ -135,6 +135,8 @@ def _normalize_command(argv: list[str]) -> list[str]:
         return ["--validate-api-contract", *rest]
     if command == "replay":
         return rest if "--burp-procedure" in rest else ["--burp-procedure", *rest]
+    if command == "json":
+        return ["--check-json-cases", *rest]
     return argv
 
 
