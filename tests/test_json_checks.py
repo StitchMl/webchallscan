@@ -1,5 +1,7 @@
 import json
+import threading
 from copy import deepcopy
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -105,3 +107,55 @@ def test_json_cli_requires_explicit_authorization_and_active(tmp_path, monkeypat
                      "--active", "--insecure"]) == 0
     assert calls[1]["verify_tls"] is False
     assert "requests_sent" in capsys.readouterr().out
+
+
+class _LocalJsonHandler(BaseHTTPRequestHandler):
+    requests = 0
+
+    def do_POST(self):
+        type(self).requests += 1
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = json.loads(self.rfile.read(length))
+        if (self.path != "/api/evaluate"
+                or self.headers.get("Content-Type") != "application/json"
+                or self.headers.get("Authorization") != "Bearer PRIVATE_TOKEN"
+                or payload.get("private") != "PRIVATE_BODY"):
+            self.send_error(400)
+            return
+        value = payload["context"]["input"]
+        body = json.dumps({
+            "result": "22020" if value == "{{7340*3}}" else "safe",
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_):
+        pass
+
+
+def test_json_ssti_real_local_http_respects_budgets_and_redacts_secrets():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _LocalJsonHandler)
+    _LocalJsonHandler.requests = 0
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        case = data()
+        case["origin"] = f"http://127.0.0.1:{server.server_port}"
+        case["cases"][0]["body"]["private"] = "PRIVATE_BODY"
+        case["cases"][0]["headers"]["Authorization"] = "Bearer PRIVATE_TOKEN"
+        result = run_json_cases(case, timeout=3.0)
+        assert result["requests_sent"] == 3
+        assert result["active_tests_executed"] == 3
+        assert _LocalJsonHandler.requests == 3
+        assert result["cases"][0]["outcome"] == "arithmetic-observed"
+        assert result["findings"][0]["status"] == "manual-validation-required"
+        serialized = json.dumps(result)
+        assert "PRIVATE_TOKEN" not in serialized
+        assert "PRIVATE_BODY" not in serialized
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
