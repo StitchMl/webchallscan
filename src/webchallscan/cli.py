@@ -112,8 +112,8 @@ def _command_arguments(argv: list[str]) -> list[str]:
     for command in ("scan", "observe", "contract", "replay"):
         subparser = subparsers.add_parser(command, add_help=False)
         subparser.add_argument("arguments", nargs=argparse.REMAINDER)
-    parsed = commands.parse_args(argv)
-    return _normalize_command([parsed.command, *parsed.arguments])
+    parsed = commands.parse_args(argv[:1])
+    return _normalize_command([parsed.command, *argv[1:]])
 
 
 def _normalize_command(argv: list[str]) -> list[str]:
