@@ -47,3 +47,32 @@ def test_legacy_flags_are_preserved(monkeypatch, capsys):
     monkeypatch.setattr(cli, "scan_profiles", lambda target, **kwargs:
                         ScanReport(target, False, pages_scanned=1))
     assert cli.main(["http://127.0.0.1/", "--authorized"]) == 0
+
+
+def test_subparser_routes_all_commands_to_legacy_parser():
+    from webchallscan.cli import _command_arguments, parser
+
+    examples = (
+        (["scan", "http://127.0.0.1/", "--authorized"], "http://127.0.0.1/", None),
+        (["observe", "--cdp", "http://127.0.0.1:9222"], None, 20.0),
+        (["contract", "contract.json"], None, None),
+        (["replay", "http://127.0.0.1/", "--authorized"], "http://127.0.0.1/", None),
+    )
+    for argv, target, duration in examples:
+        parsed = parser().parse_args(_command_arguments(argv))
+        assert parsed.url == target
+        assert parsed.observe_network == duration
+    assert parser().parse_args(_command_arguments(["contract", "contract.json"])).validate_api_contract == "contract.json"
+    assert parser().parse_args(_command_arguments(["replay", "http://127.0.0.1/"])).burp_procedure
+
+
+def test_root_flags_stay_unchanged_with_subparsers():
+    from webchallscan.cli import _command_arguments
+
+    argv = ["http://127.0.0.1/", "--authorized", "--max-requests", "3"]
+    assert _command_arguments(argv) == argv
+    assert _command_arguments(["--version"]) == ["--version"]
+    assert _command_arguments(["scan", "--help"]) == ["--help"]
+    assert _command_arguments(["observe", "--observe-network", "2", "--authorized"]) == [
+        "--observe-network", "2", "--authorized",
+    ]

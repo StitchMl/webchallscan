@@ -103,6 +103,19 @@ def _extension_path() -> Path:
     raise ValueError("bundled browser extension directory was not found")
 
 
+def _command_arguments(argv: list[str]) -> list[str]:
+    """Parse optional subcommands while retaining legacy root-level options."""
+    if not argv or argv[0] not in {"scan", "observe", "contract", "replay"}:
+        return argv
+    commands = argparse.ArgumentParser(prog="webchallscan", add_help=False)
+    subparsers = commands.add_subparsers(dest="command", required=True)
+    for command in ("scan", "observe", "contract", "replay"):
+        subparser = subparsers.add_parser(command, add_help=False)
+        subparser.add_argument("arguments", nargs=argparse.REMAINDER)
+    parsed = commands.parse_args(argv)
+    return _normalize_command([parsed.command, *parsed.arguments])
+
+
 def _normalize_command(argv: list[str]) -> list[str]:
     """Translate optional command-style syntax to the legacy argparse flags.
 
@@ -526,7 +539,7 @@ _MODE_STEPS = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(_normalize_command(list(sys.argv[1:] if argv is None else argv)))
+    args = parser().parse_args(_command_arguments(list(sys.argv[1:] if argv is None else argv)))
     for step in _MODE_STEPS:
         code = step(args)
         if code is not None:
