@@ -69,6 +69,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send("session-ok" if "wcs_session=valid" in self.headers.get("Cookie", "") else "denied", 200 if "wcs_session=valid" in self.headers.get("Cookie", "") else 403)
         elif p.path == "/form":
             self._send('<html><form action="/postrun" method="post"><input type="hidden" name="csrf" value="token-42"><input name="cmd" value="default"></form></html>')
+        elif p.path == "/repeated-post-form":
+            self._send('<html><form action="/repeated-post-run" method="post">'
+                       '<input name="cmd" value="default">'
+                       '<input type="hidden" name="scope" value="read">'
+                       '<input type="hidden" name="scope" value="write">'
+                       '<input type="hidden" name="csrf" value="token-42">'
+                       '</form></html>')
         elif p.path == "/textarea-form":
             self._send('<html><form action="/textarea-run" method="post">'
                        '<input type="hidden" name="csrf" value="token-42">'
@@ -94,7 +101,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         values = parse_qs(self.rfile.read(length).decode())
-        if (self.path == "/textarea-run" and values.get("csrf") == ["token-42"]
+        if (self.path == "/repeated-post-run"
+                and values.get("scope") == ["read", "write"]
+                and values.get("csrf") == ["token-42"]
+                and values.get("cmd") == [CMD_PROBE]):
+            self._send(CMD_RESULT)
+        elif self.path == "/repeated-post-run":
+            self._send("denied", 403)
+        elif (self.path == "/textarea-run" and values.get("csrf") == ["token-42"]
                 and values.get("note") == ["hello & goodbye"]
                 and values.get("cmd") == [CMD_PROBE]):
             self._send(CMD_RESULT)
@@ -706,3 +720,20 @@ def test_checked_boolean_html_attribute_counts_as_selected():
     parser = PageParser()
     parser.feed('<form><input type="radio" name="role" checked="false" value="admin"></form>')
     assert parser.forms[0].inputs == [("role", "radio", "admin")]
+
+
+def test_active_post_preserves_repeated_form_fields_and_request_budget(server):
+    scanner = Scanner(server + "/repeated-post-form", active=True,
+                      max_pages=1, max_requests=80)
+    report = scanner.scan()
+    confirmed = [finding for finding in report.findings
+                 if finding.rule == "WEB-CMDI-001"
+                 and finding.parameter == "cmd"
+                 and finding.exploit_status == "payload-ready"]
+    assert confirmed
+    assert confirmed[0].method == "POST"
+    assert confirmed[0].request_fields.count(("scope", "read")) == 1
+    assert confirmed[0].request_fields.count(("scope", "write")) == 1
+    assert ("csrf", "token-42") in confirmed[0].request_fields
+    assert report.requests_sent <= 80
+    assert report.pages_scanned == 1
