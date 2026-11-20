@@ -23,8 +23,9 @@ def test_offline_plan_records_no_active_tests():
 
 
 def test_origin_mismatch_is_rejected():
+    data = inventory()
     with pytest.raises(ValueError):
-        plan_inventory(inventory(), "https://other.example")
+        plan_inventory(data, "https://other.example")
 
 
 def test_non_path_and_bad_schema_rejected():
@@ -52,8 +53,9 @@ def test_get_inventory_urls_filters_writes_and_replaces_values():
 
 def test_get_inventory_urls_rejects_origin_mismatch_and_unsafe_paths():
     from webchallscan.planner import inventory_get_urls
+    mismatched = inventory()
     with pytest.raises(ValueError):
-        inventory_get_urls(inventory(), "https://other.example/")
+        inventory_get_urls(mismatched, "https://other.example/")
     data = inventory()
     data["endpoints"].extend([
         {"method": "GET", "path": "/../admin", "parameters": []},

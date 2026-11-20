@@ -21,7 +21,9 @@ def report():
 def test_default_scanner_text_caps_to_twenty_while_preserving_full_summary():
     output = render_text(report(), "never")
     assert "Findings: 31" in output
-    assert "HIGH 4" in output and "MEDIUM 3" in output and "INFO 24" in output
+    assert "HIGH 4" in output
+    assert "MEDIUM 3" in output
+    assert "INFO 24" in output
     assert output.count("    Target") == 20
     assert "11 finding detail(s) omitted" in output
     assert "Finding number 24" in output
@@ -51,11 +53,12 @@ def test_verbose_displays_all_by_default():
 
 
 def test_invalid_limits_are_rejected():
+    sample = report()
     for invalid in (0, -1, 1001):
         with pytest.raises(ValueError):
-            render_text(report(), "never", top=invalid)
+            render_text(sample, "never", top=invalid)
     with pytest.raises(ValueError):
-        render_text(report(), "never", min_severity="unknown")
+        render_text(sample, "never", min_severity="unknown")
 
 
 def test_cli_filters_do_not_change_scan_exit_codes(monkeypatch, capsys):

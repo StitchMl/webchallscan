@@ -20,8 +20,7 @@ _KNOWN = {"js", "jsx", "ts", "tsx", "vue", "mjs", "cjs", "css", "scss", "html"}
 _MAX_CONTENT = 100_000
 
 
-def audit_source_map(data: object) -> dict:
-    """Report aggregate source-map structure without returning source names/content."""
+def _validate_map(data: object) -> tuple[list, list | None]:
     if not isinstance(data, dict) or data.get("version") != 3:
         raise ValueError("expected a JavaScript source-map v3 object")
     sources = data.get("sources")
@@ -38,13 +37,20 @@ def audit_source_map(data: object) -> dict:
         raise ValueError("source-map sourcesContent must align with sources")
     if contents and sum(len(x) for x in contents if x is not None) > MAX_BYTES:
         raise ValueError("source-map embedded content is too large")
+    return sources, contents
+
+
+def _extension_counts(sources: list) -> Counter[str]:
     extensions: Counter[str] = Counter()
     for name in sources:
         # File-extension-only classification: never reveal arbitrary names.
         match = _EXTENSION.search(name)
         suffix = match.group(1).lower() if match else ""
         extensions[suffix if suffix in _KNOWN else "other"] += 1
+    return extensions
 
+
+def _comment_hints(contents: list | None) -> set[str]:
     hints: set[str] = set()
     for body in (contents or [])[:MAX_SOURCES]:
         if body is None:
@@ -54,6 +60,14 @@ def audit_source_map(data: object) -> dict:
             if re.search(r"(?<![A-Za-z0-9_])" + hint + r"(?![A-Za-z0-9_])",
                          body[:_MAX_CONTENT], re.I):
                 hints.add(hint)
+    return hints
+
+
+def audit_source_map(data: object) -> dict:
+    """Report aggregate source-map structure without returning source names/content."""
+    sources, contents = _validate_map(data)
+    extensions = _extension_counts(sources)
+    hints = _comment_hints(contents)
     return {
         "schema": "webchallscan/source-map-audit-v1",
         "source_count": len(sources),
@@ -104,6 +118,6 @@ def audit_source_map_file(path: str) -> dict:
         raise ValueError("source-map file exceeds 2 MB")
     try:
         data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise ValueError("invalid source-map JSON file") from exc
     return audit_source_map(data)

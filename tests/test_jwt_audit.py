@@ -18,8 +18,8 @@ def test_audit_does_not_return_values_or_secrets():
                      {"sub": "private@example.com", "role": "admin", "debug": "PRIVATE"})
     report = audit_jwt(original)
     assert report["algorithm"] == "none"
-    assert {"JWT-ALG-NONE", "JWT-KEY-REFERENCE", "JWT-AUTHORIZATION-CLAIMS"} == {
-        item["rule"] for item in report["signals"]
+    assert {item["rule"] for item in report["signals"]} == {
+        "JWT-ALG-NONE", "JWT-KEY-REFERENCE", "JWT-AUTHORIZATION-CLAIMS"
     }
     assert report["active_tests_executed"] == 0
     assert "PRIVATE" not in repr(report)

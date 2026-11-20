@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import re
 
@@ -38,7 +37,7 @@ def _structure(value: str) -> tuple[str, list[str]]:
                 value + "=" * (-len(value) % 4),
                 altchars=b"-_", validate=True,
             )
-        except (ValueError, binascii.Error):
+        except ValueError:
             return "unknown", []
         return _encoded_category("base64", decoded), []
     return "unknown", []
@@ -49,7 +48,7 @@ def _encoded_category(prefix: str, raw: bytes) -> str:
         return prefix + "-shaped"
     try:
         content = json.loads(raw)
-    except (ValueError, UnicodeDecodeError):
+    except ValueError:
         return prefix + "-shaped"
     return prefix + "-json-like" if isinstance(content, (dict, list)) else prefix + "-shaped"
 

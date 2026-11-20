@@ -66,8 +66,9 @@ def test_large_announced_frame_rejected_before_body_read():
     (frame(b"[]"), "must be an object"),
 ])
 def test_invalid_frames_are_rejected_safely(raw, reason):
+    socket = ws(raw)
     with pytest.raises(SessionCaptureError, match=reason):
-        ws(raw).recv_json()
+        socket.recv_json()
 
 
 def test_control_pong_frame_is_ignored():

@@ -4,17 +4,22 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .model import REDACTED, Finding, ScanReport, redact_url
 
+QUERY_STRING = "query string"
+REQUEST_BODY = "request body"
+_TEMPLATE_HEADERS = {"user-agent", "accept-language",
+                     "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}
+
 
 def _parameter_location(finding: Finding) -> str:
     if finding.method == "GET":
-        return "query string"
+        return QUERY_STRING
     body_names = {name for name, _ in finding.request_fields}
     if finding.parameter in body_names:
-        return "request body"
+        return REQUEST_BODY
     query_names = {name for name, _ in parse_qsl(urlsplit(finding.url).query, keep_blank_values=True)}
     if finding.parameter in query_names:
-        return "query string"
-    return "request body"
+        return QUERY_STRING
+    return REQUEST_BODY
 
 
 def _request_line(finding: Finding, include_secrets: bool) -> str:
@@ -26,6 +31,51 @@ def _request_line(finding: Finding, include_secrets: bool) -> str:
         )
         path = f"{path}?{query}"
     return f"{finding.method} {path} HTTP/1.1"
+
+
+def _template_query(finding: Finding, parsed, include_secrets: bool, location: str, proof: str) -> list[tuple[str, str]]:
+    query = [
+        (name, value if include_secrets else REDACTED)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+    ]
+    if location == QUERY_STRING and finding.parameter:
+        replaced = False
+        for i, (name, _) in enumerate(query):
+            if name == finding.parameter:
+                query[i] = (name, proof)
+                replaced = True
+        if not replaced:
+            query.append((finding.parameter, proof))
+    return query
+
+
+def _template_headers(finding: Finding, include_secrets: bool) -> list[str]:
+    headers = []
+    for name, value in finding.client_headers:
+        if name.lower() in _TEMPLATE_HEADERS and not any(c in name + value for c in "\r\n"):
+            headers.append(f"{name}: {value}")
+    if finding.session_cookies:
+        cookies = "; ".join(
+            f"{name}={value if include_secrets else REDACTED}"
+            for name, value in finding.session_cookies
+            if not any(c in name + value for c in "\r\n")
+        )
+        if cookies:
+            headers.append(f"Cookie: {cookies}")
+    return headers
+
+
+def _template_body(finding: Finding, location: str, proof: str) -> str:
+    fields = [
+        (name, proof if name == finding.parameter and location == REQUEST_BODY
+         else REDACTED)
+        for name, _ in finding.request_fields
+    ]
+    if finding.parameter and location == REQUEST_BODY and not any(
+        name == finding.parameter for name, _ in fields
+    ):
+        fields.append((finding.parameter, proof))
+    return urlencode(fields)
 
 
 def _raw_http_template(finding: Finding, include_secrets: bool) -> str:
@@ -41,51 +91,18 @@ def _raw_http_template(finding: Finding, include_secrets: bool) -> str:
     parsed = urlsplit(finding.url)
     location = _parameter_location(finding)
     proof = finding.proof_payload or finding.recovery_payload
-    query = [
-        (name, value if include_secrets else REDACTED)
-        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
-    ]
-    if location == "query string" and finding.parameter:
-        replaced = False
-        for i, (name, _) in enumerate(query):
-            if name == finding.parameter:
-                query[i] = (name, proof)
-                replaced = True
-        if not replaced:
-            query.append((finding.parameter, proof))
+    query = _template_query(finding, parsed, include_secrets, location, proof)
     target = parsed.path or "/"
     if query:
         target += "?" + urlencode(query)
-    host = parsed.netloc
     headers = [
         f"{finding.method} {target} HTTP/1.1",
-        f"Host: {host}",
+        f"Host: {parsed.netloc}",
+        *_template_headers(finding, include_secrets),
     ]
-    for name, value in finding.client_headers:
-        if name.lower() in {"user-agent", "accept-language",
-                            "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"}:
-            if not any(c in name + value for c in "\r\n"):
-                headers.append(f"{name}: {value}")
-    if finding.session_cookies:
-        cookies = "; ".join(
-            f"{name}={value if include_secrets else REDACTED}"
-            for name, value in finding.session_cookies
-            if not any(c in name + value for c in "\r\n")
-        )
-        if cookies:
-            headers.append(f"Cookie: {cookies}")
     body = ""
     if finding.method == "POST":
-        fields = [
-            (name, proof if name == finding.parameter and location == "request body"
-             else REDACTED)
-            for name, _ in finding.request_fields
-        ]
-        if finding.parameter and location == "request body" and not any(
-            name == finding.parameter for name, _ in fields
-        ):
-            fields.append((finding.parameter, proof))
-        body = urlencode(fields)
+        body = _template_body(finding, location, proof)
         headers.append("Content-Type: application/x-www-form-urlencoded")
         headers.append(f"Content-Length: {len(body.encode('utf-8'))}")
     return "\r\n".join(headers) + "\r\n\r\n" + body
