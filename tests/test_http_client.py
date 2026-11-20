@@ -111,6 +111,8 @@ def test_shared_api_handlers_retain_verified_default_and_explicit_opt_out():
     assert isinstance(insecure[1], HTTPSHandler)
     assert insecure[1]._context.verify_mode == ssl.CERT_NONE
     assert validate_loopback_proxy("http://localhost:8080") == "http://localhost:8080"
+    with pytest.raises(ValueError, match="non-zero port"):
+        validate_loopback_proxy("http://127.0.0.1:0")
     for invalid in ("http://example.com:8080", "https://127.0.0.1:8080",
                     "http://user:secret@localhost:8080", "http://localhost/other"):
         with pytest.raises(ValueError):

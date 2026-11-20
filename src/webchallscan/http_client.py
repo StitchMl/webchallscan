@@ -47,8 +47,8 @@ def validate_loopback_proxy(proxy: str | None) -> str | None:
         port = p.port
     except ValueError as exc:
         raise ValueError("--proxy requires a valid port") from exc
-    if port is None:
-        raise ValueError("--proxy requires an explicit port")
+    if port is None or port == 0:
+        raise ValueError("--proxy requires a valid non-zero port")
     return proxy
 
 
