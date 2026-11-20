@@ -789,3 +789,34 @@ def test_get_query_probe_preserves_repeated_query_parameters(server):
         "scope": ["read", "write"], "cmd": [CMD_PROBE],
     }
     assert captured[0][1:] == ("GET", None)
+
+
+def test_starttag_dispatch_preserves_links_scripts_and_mixed_form_controls():
+    from webchallscan.scanner import PageParser
+
+    parser = PageParser()
+    parser.feed("""
+    <a href="/next">next</a>
+    <link rel="canonical" href="/home">
+    <iframe src="/frame"></iframe>
+    <script src="/bundle.js"></script>
+    <form method="post" action="/submit">
+      <input name="token" type="hidden" value="keep">
+      <input name="ignored" type="checkbox" value="no">
+      <input name="enabled" type="checkbox" checked>
+      <select name="mode"><option value="a">A</option><option selected value="b">B</option></select>
+      <textarea name="note">hello &amp; world</textarea>
+      <input name="cmd" value="default">
+    </form>
+    """)
+    assert parser.links == ["/next", "/home", "/frame"]
+    assert parser.scripts == ["/bundle.js"]
+    assert parser.forms[0].method == "POST"
+    assert parser.forms[0].action == "/submit"
+    assert parser.forms[0].inputs == [
+        ("token", "hidden", "keep"),
+        ("enabled", "checkbox", "on"),
+        ("mode", "select", "b"),
+        ("note", "textarea", "hello & world"),
+        ("cmd", "text", "default"),
+    ]

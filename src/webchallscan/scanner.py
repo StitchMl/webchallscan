@@ -185,23 +185,37 @@ class PageParser(HTMLParser):
             self.scripts.append(data["src"])
         elif name == "form":
             self._start_form(data)
-        elif name == "select" and self._form and data.get("name"):
-            self._start_select(data)
-        elif name == "option" and self._form and self._select_index is not None:
+        else:
+            self._handle_form_control(name, attrs, data)
+
+    def _handle_form_control(self, name: str, attrs: list[tuple[str, str | None]],
+                             data: dict[str, str]) -> None:
+        if self._form is None:
+            return
+        if name == "option" and self._select_index is not None:
             self._add_option(attrs, data)
-        elif name == "textarea" and self._form and data.get("name"):
-            self._textarea_index = len(self._form.inputs)
-            self._textarea_text = []
-            self._form.inputs.append((data["name"], "textarea", ""))
-        elif name == "input" and self._form and data.get("name"):
-            input_type = data.get("type", "text").lower()
-            if input_type in {"checkbox", "radio"}:
-                if not any(key.lower() == "checked" for key, _ in attrs):
-                    return
-                value = data.get("value", "on")
+        elif name in {"select", "textarea", "input"} and data.get("name"):
+            if name == "select":
+                self._start_select(data)
+            elif name == "textarea":
+                self._start_textarea(data)
             else:
-                value = data.get("value", "")
-            self._form.inputs.append((data["name"], input_type, value))
+                self._add_input(attrs, data)
+
+    def _start_textarea(self, data: dict[str, str]) -> None:
+        self._textarea_index = len(self._form.inputs)
+        self._textarea_text = []
+        self._form.inputs.append((data["name"], "textarea", ""))
+
+    def _add_input(self, attrs: list[tuple[str, str | None]], data: dict[str, str]) -> None:
+        input_type = data.get("type", "text").lower()
+        if input_type in {"checkbox", "radio"}:
+            if not any(key.lower() == "checked" for key, _ in attrs):
+                return
+            value = data.get("value", "on")
+        else:
+            value = data.get("value", "")
+        self._form.inputs.append((data["name"], input_type, value))
 
     def _add_anchor_link(self, name: str, data: dict[str, str]) -> None:
         if name == "a" or data.get("rel", "").lower() in {"canonical", "alternate"}:
