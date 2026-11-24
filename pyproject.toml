@@ -13,7 +13,7 @@ authors = [{name = "StitchMl"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["coverage", "pytest", "ruff"]
+dev = ["coverage", "pytest", "ruff", "complexipy"]
 
 [project.scripts]
 webchallscan = "webchallscan.cli:main"
