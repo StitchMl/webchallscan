@@ -22,9 +22,9 @@ from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
 from .snippets import render_snippets
+from .source_inventory import source_inventory
 from .source_map_audit import audit_source_map_file
 from .structured_report import render_structured_text
-from .source_inventory import source_inventory
 from .session import (
     BrowserSession,
     capture_cdp_session,
