@@ -32,6 +32,12 @@ SSTI_ALTERNATE_PROBES = (
     ("erb-ejs", "<%= 7340*3 %>"),
     ("hash-brace", "#{7340*3}"),
 )
+FILE_PATH_ALTERNATE_PROBES = (
+    "....//....//....//....//etc/passwd",
+    "..%2f..%2f..%2f..%2fetc%2fpasswd",
+    "/etc/passwd",
+    r"..\..\..\..\Windows\win.ini",
+)
 XSS_PROBE = "<wcs7340>"
 MAX_BODY = 1_000_000
 HTML_MARKER = "<html"
@@ -642,6 +648,8 @@ class Scanner:
         return self._request(url)
 
     def _active_probe(self, finding: Finding) -> Finding | None:
+        if finding.rule == "WEB-FILE-001":
+            return self._probe_file_path_variants(finding)
         if finding.parameter == "" or self.requests_sent + 2 > self.max_requests:
             return None
         probe = _ACTIVE_PROBES.get(finding.rule, "'")
@@ -656,6 +664,24 @@ class Scanner:
             or self._confirm_file_path(finding, probe, baseline, tested)
             or self._confirm_xss(finding, probe, baseline, tested)
         )
+
+    def _probe_file_path_variants(self, finding: Finding) -> Finding | None:
+        if finding.parameter == "" or self.requests_sent + 2 > self.max_requests:
+            return None
+        baseline = self._send_probe(finding, "WCSBASE")
+        probes = dict.fromkeys((_ACTIVE_PROBES[finding.rule], *FILE_PATH_ALTERNATE_PROBES))
+        differential = None
+        for probe in probes:
+            if self.requests_sent >= self.max_requests:
+                break
+            tested = self._send_probe(finding, probe)
+            confirmed = self._confirm_file_path(finding, probe, baseline, tested)
+            if confirmed is None:
+                continue
+            if confirmed.confidence == "high":
+                return confirmed
+            differential = differential or confirmed
+        return differential
 
     def _confirm_sqli_error(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
         method = finding.method
@@ -795,19 +821,22 @@ class Scanner:
     def _confirm_file_path(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
         method = finding.method
         root_record = re.compile(r"(?m)^root:[^:\r\n]*:0:0:")
-        if (finding.rule == "WEB-FILE-001" and root_record.search(tested.text)
-                and not root_record.search(baseline.text)):
+        windows_ini = re.compile(r"(?im)^\s*\[(?:fonts|extensions|mci extensions)\]\s*$")
+        marker = root_record.search(tested.text) or windows_ini.search(tested.text)
+        baseline_marker = root_record.search(baseline.text) or windows_ini.search(baseline.text)
+        if finding.rule == "WEB-FILE-001" and marker and not baseline_marker:
+            marker_name = "Unix passwd root-record" if root_record.search(tested.text) else "Windows INI-section"
             return self._finding(
                 rule=finding.rule, title="Path traversal file read confirmed",
                 severity="high", confidence="high", url=finding.url,
                 parameter=finding.parameter,
-                evidence=("The traversal probe returned a Unix passwd root-record marker "
-                          "absent from the baseline; response contents are not retained."),
-                vector=(f"GET {redact_url(finding.url)} with "
-                        f"{finding.parameter}=../../../../etc/passwd."),
+                evidence=(f"The traversal probe returned a {marker_name} marker absent from "
+                          "the baseline; response contents are not retained."),
+                vector=(f"{method} {redact_url(finding.url)} with "
+                        f"{finding.parameter}={probe!r}."),
                 patch=finding.patch, method=method,
                 request_fields=finding.request_fields, proof_payload=probe,
-                expected_evidence="Unix passwd root-record marker absent from baseline",
+                expected_evidence=f"{marker_name} marker absent from baseline",
                 flag_path=("A server-side file read is confirmed. Verify a challenge-specific "
                            "flag path manually; no file contents are included in this report."),
             )
