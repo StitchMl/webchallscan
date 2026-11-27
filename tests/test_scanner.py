@@ -169,6 +169,7 @@ def test_path_probe_confirms_unix_file_read_without_retaining_file_data(monkeypa
 
     def send(_finding, value):
         sent.append(value)
+        scanner.requests_sent += 1
         return next(responses)
 
     monkeypatch.setattr(scanner, "_send_probe", send)
@@ -179,6 +180,91 @@ def test_path_probe_confirms_unix_file_read_without_retaining_file_data(monkeypa
     assert confirmed.severity == "high"
     assert "root:x:0:0" not in str(confirmed.to_dict())
     assert sent == ["WCSBASE", "../../../../etc/passwd"]
+
+
+def test_path_probe_tries_filtered_traversal_variant_within_request_budget(monkeypatch):
+    from webchallscan.scanner import FILE_PATH_ALTERNATE_PROBES, Response
+
+    target = "https://ctf.example/download?file=avatar.jpg"
+    scanner = Scanner(target, active=True, max_requests=3)
+    finding = Finding(
+        rule="WEB-FILE-001", title="Possible file path injection",
+        severity="medium", confidence="low", url=target, parameter="file",
+    )
+    sent = []
+    responses = iter((
+        Response(target, 200, {}, "image data"),
+        Response(target, 200, {}, "image data"),
+        Response(target, 200, {}, "root:x:0:0:root:/root:/bin/sh"),
+    ))
+
+    def send(_finding, value):
+        sent.append(value)
+        scanner.requests_sent += 1
+        return next(responses)
+
+    monkeypatch.setattr(scanner, "_send_probe", send)
+    confirmed = scanner._active_probe(finding)
+
+    assert confirmed is not None
+    assert confirmed.confidence == "high"
+    assert "root:x:0:0" not in str(confirmed.to_dict())
+    assert sent == ["WCSBASE", "../../../../etc/passwd", FILE_PATH_ALTERNATE_PROBES[0]]
+    assert scanner.requests_sent == 3
+
+
+def test_path_probe_respects_budget_after_baseline_and_first_variant(monkeypatch):
+    from webchallscan.scanner import Response
+
+    target = "https://ctf.example/download?file=avatar.jpg"
+    scanner = Scanner(target, active=True, max_requests=2)
+    finding = Finding(
+        rule="WEB-FILE-001", title="Possible file path injection",
+        severity="medium", confidence="low", url=target, parameter="file",
+    )
+    sent = []
+
+    def send(_finding, value):
+        sent.append(value)
+        scanner.requests_sent += 1
+        return Response(target, 200, {}, "same response")
+
+    monkeypatch.setattr(scanner, "_send_probe", send)
+    scanner._active_probe(finding)
+
+    assert sent == ["WCSBASE", "../../../../etc/passwd"]
+
+
+def test_path_probe_confirms_windows_ini_read_without_retaining_file_data(monkeypatch):
+    from webchallscan.scanner import FILE_PATH_ALTERNATE_PROBES, Response
+
+    target = "https://ctf.example/download?file=avatar.jpg"
+    scanner = Scanner(target, active=True, max_requests=6)
+    finding = Finding(
+        rule="WEB-FILE-001", title="Possible file path injection",
+        severity="medium", confidence="low", url=target, parameter="file",
+    )
+    sent = []
+    body_by_probe = {
+        "WCSBASE": "image data",
+        "../../../../etc/passwd": "image data",
+        **dict.fromkeys(FILE_PATH_ALTERNATE_PROBES[:-1], "image data"),
+        FILE_PATH_ALTERNATE_PROBES[-1]: "[fonts]\n[extensions]\nsecret=not-for-report",
+    }
+
+    def send(_finding, value):
+        sent.append(value)
+        scanner.requests_sent += 1
+        return Response(target, 200, {}, body_by_probe[value])
+
+    monkeypatch.setattr(scanner, "_send_probe", send)
+    confirmed = scanner._active_probe(finding)
+
+    assert confirmed is not None
+    assert confirmed.confidence == "high"
+    assert "secret=not-for-report" not in str(confirmed.to_dict())
+    assert sent[-1] == FILE_PATH_ALTERNATE_PROBES[-1]
+    assert scanner.requests_sent == 6
 
 
 def test_crawl_discovers_same_origin_paths_from_robots_and_sitemap(monkeypatch):
