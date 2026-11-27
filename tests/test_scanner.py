@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from webchallscan.model import Finding, ScanReport
 from webchallscan.scanner import (
     CMD_PROBE,
     CMD_RESULT,
@@ -149,6 +150,113 @@ def test_passive_is_deterministic_and_stays_hypothetical(server):
     assert [f.to_dict() for f in one.findings] == [f.to_dict() for f in two.findings]
     assert {f.rule for f in one.findings} >= {"WEB-SQLI-001", "WEB-CMDI-001"}
     assert all(f.exploit_status == "validation-only" for f in one.findings)
+
+
+def test_path_probe_confirms_unix_file_read_without_retaining_file_data(monkeypatch):
+    from webchallscan.scanner import Response
+
+    target = "https://ctf.example/download?file=avatar.jpg"
+    scanner = Scanner(target, active=True)
+    finding = Finding(
+        rule="WEB-FILE-001", title="Possible file path injection",
+        severity="medium", confidence="low", url=target, parameter="file",
+    )
+    sent = []
+    responses = iter((
+        Response(target, 200, {}, "image data"),
+        Response(target, 200, {}, "root:x:0:0:root:/root:/bin/sh"),
+    ))
+
+    def send(_finding, value):
+        sent.append(value)
+        return next(responses)
+
+    monkeypatch.setattr(scanner, "_send_probe", send)
+    confirmed = scanner._active_probe(finding)
+
+    assert confirmed is not None
+    assert confirmed.title == "Path traversal file read confirmed"
+    assert confirmed.severity == "high"
+    assert "root:x:0:0" not in str(confirmed.to_dict())
+    assert sent == ["WCSBASE", "../../../../etc/passwd"]
+
+
+def test_crawl_discovers_same_origin_paths_from_robots_and_sitemap(monkeypatch):
+    from webchallscan.scanner import Response
+
+    target = "https://ctf.example/"
+    scanner = Scanner(target, max_pages=20, max_requests=40)
+    requested = []
+
+    def fake_request(url, method="GET", data=None):
+        requested.append(url)
+        scanner.requests_sent += 1
+        path = urlsplit(url).path
+        if path == "/":
+            return Response(url, 200, {"content-type": "text/html"}, "<html>challenge</html>")
+        if path == "/robots.txt":
+            body = "User-agent: *\nDisallow: /hidden\nSitemap: /sitemap.xml\n"
+            return Response(url, 200, {"content-type": "text/plain"}, body)
+        if path == "/sitemap.xml":
+            body = "<urlset><url><loc>https://ctf.example/from-map</loc></url>" \
+                   "<url><loc>https://outside.example/skip</loc></url></urlset>"
+            return Response(url, 200, {"content-type": "application/xml"}, body)
+        return Response(url, 404, {"content-type": "text/plain"}, "missing")
+
+    monkeypatch.setattr(scanner, "_request", fake_request)
+    report = ScanReport(target, False)
+    scanner._crawl(report)
+
+    assert target in requested
+    assert "https://ctf.example/robots.txt" in requested
+    assert "https://ctf.example/sitemap.xml" in requested
+    assert "https://ctf.example/hidden" in requested
+    assert "https://ctf.example/from-map" in requested
+    assert all("outside.example" not in url for url in requested)
+    assert any("robots.txt/sitemaps" in note and "common-path shortlist" in note
+               for note in report.coverage)
+
+
+def test_common_path_discovery_is_bounded_and_same_origin(monkeypatch):
+    from webchallscan.scanner import Response
+
+    target = "https://ctf.example/"
+    scanner = Scanner(target, max_pages=20, max_requests=40)
+    requested = []
+
+    def request(url, method="GET", **_kwargs):
+        requested.append(url)
+        path = urlsplit(url).path
+        if path == "/":
+            body = "<html>challenge</html>"
+        elif path == "/robots.txt":
+            body = ""
+        elif path == "/admin":
+            body = "<html><a href='/admin/hidden'>panel</a></html>"
+        else:
+            body = "missing"
+        status = 200 if path in {"/", "/robots.txt", "/admin"} else 404
+        return Response(url, status, {"content-type": "text/html"}, body)
+
+    monkeypatch.setattr(scanner, "_request", request)
+    report = ScanReport(target, True)
+    scanner._crawl(report)
+
+    assert "https://ctf.example/admin" in requested
+    assert "https://ctf.example/admin/hidden" in requested
+    assert all(url.startswith("https://ctf.example/") for url in requested)
+    assert len({urlsplit(url).path for url in requested}) <= 16
+
+
+def test_robots_route_hints_have_explicit_count_limits():
+    from webchallscan.scanner import MAX_ROBOTS_PATHS, _robots_hints
+
+    text = "".join(f"Disallow: /private-{index}\n" for index in range(100))
+    text += "".join(f"Sitemap: /map-{index}.xml\n" for index in range(20))
+    sitemaps, paths = _robots_hints(text)
+
+    assert len(paths) == MAX_ROBOTS_PATHS
+    assert len(sitemaps) == 5
 
 
 def test_active_confirms_without_flag_extraction(server):

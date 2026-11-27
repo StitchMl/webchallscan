@@ -36,8 +36,13 @@ from .session import (
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="webchallscan", description="Deterministic black-box scanner for authorized CTF web challenges.")
     p.add_argument("url", nargs="?", help="absolute HTTP(S) challenge URL; optional with a session source")
-    p.add_argument("--authorized", action="store_true", help="required acknowledgment that you may test this target")
-    p.add_argument("--active", action="store_true", help="enable bounded, low-impact validation probes; never extracts flags")
+    p.add_argument("--authorized", action="store_true", help="acknowledge permission for workflows without an explicit target URL")
+    active = p.add_mutually_exclusive_group()
+    active.add_argument("--active", dest="active", action="store_true",
+                        help="run bounded GET validation probes (default)")
+    active.add_argument("--passive", dest="active", action="store_false",
+                        help="crawl and inspect responses without validation probes")
+    p.set_defaults(active=None)
     p.add_argument("--ssti-alternates", action="store_true", help="opt into additional bounded SSTI arithmetic syntaxes (requires --active)")
     p.add_argument("--nosql-query", action="store_true", help="opt into bounded GET bracket-operator differential checks (requires --active)")
     p.add_argument("--profile", choices=("desktop", "mobile", "both"), default="both",
@@ -425,8 +430,8 @@ def _handle_observe_network(args) -> int | None:
 
 
 def _check_scan_options(args) -> int | None:
-    if not args.authorized:
-        return _fail("error: --authorized is required; scan only targets you are permitted to test")
+    if not args.authorized and not args.url:
+        return _fail("error: provide a target URL or use --authorized with a browser/session source")
     if (args.export_curl and args.export_python) or (args.burp_procedure and (args.export_curl or args.export_python)):
         return _fail("error: choose only one of --burp-procedure, --export-curl or --export-python")
     if args.ssti_alternates and not args.active:
@@ -492,7 +497,7 @@ def _run_scan(args) -> tuple[object, int | None]:
     profiles = ("desktop", "mobile") if args.profile == "both" else (args.profile,)
     sessions = _scan_sessions(args, captured)
     inventory_urls = inventory_get_urls(load_inventory(args.from_inventory), target) if args.from_inventory else ()
-    report = scan_profiles(target, profiles=profiles, active=args.active,
+    report = scan_profiles(target, profiles=profiles, active=args.active is not False,
                            max_pages=args.max_pages, max_requests=args.max_requests,
                            timeout=args.timeout, verify_tls=not args.insecure,
                            sessions=sessions, proxy=args.proxy, inventory_urls=inventory_urls,

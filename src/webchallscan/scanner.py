@@ -45,6 +45,17 @@ DEBUG_ERRORS = (
     "debug mode", "exception in thread", "fatal error:",
 )
 FLAG_RE = re.compile(r"(?:flag|ctf|picoctf|htb)\s*\{[^}\r\n]{1,200}\}", re.I)
+_ROBOTS_DIRECTIVE = re.compile(r"(?im)^\s*(sitemap|allow|disallow)\s*:\s*(.*?)\s*$")
+_SITEMAP_LOCATION = re.compile(r"(?is)<loc\b[^>]*>([^<]{1,2048})</loc\s*>")
+MAX_SITEMAP_FILES = 5
+MAX_SITEMAP_ROUTES = 100
+MAX_ROBOTS_PATHS = 32
+COMMON_ROUTE_PATHS = (
+    "/admin", "/login", "/api", "/graphql", "/openapi.json",
+    "/swagger.json", "/debug", "/backup", "/source", "/flag",
+    "/.git/HEAD", "/actuator/health",
+)
+MAX_AUXILIARY_ROUTES = MAX_SITEMAP_ROUTES + len(COMMON_ROUTE_PATHS)
 PROFILES = {
     "desktop": {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -59,6 +70,29 @@ PROFILES = {
         "Sec-CH-UA-Platform": '"Android"',
     },
 }
+
+
+def _robots_hints(text: str) -> tuple[list[str], list[str]]:
+    """Extract sitemap URLs and exact Allow/Disallow paths from robots.txt."""
+    sitemaps: list[str] = []
+    paths: list[str] = []
+    for match in _ROBOTS_DIRECTIVE.finditer(text[:MAX_BODY]):
+        directive, value = match.groups()
+        value = value.strip()
+        if not value:
+            continue
+        if directive.casefold() == "sitemap":
+            if len(sitemaps) < MAX_SITEMAP_FILES:
+                sitemaps.append(value)
+        elif (value.startswith("/") and len(paths) < MAX_ROBOTS_PATHS
+              and not any(char in value for char in "*$\\")):
+            paths.append(value)
+    return sitemaps, paths
+
+
+def _sitemap_locations(text: str) -> list[str]:
+    """Extract bounded <loc> values without parsing DTDs or expanding entities."""
+    return [unescape(match).strip() for match in _SITEMAP_LOCATION.findall(text[:MAX_BODY])]
 
 
 def _line_comment_end(text: str, start: int) -> int:
@@ -143,7 +177,7 @@ def _hypothesis_applies(rule: tuple, key: str, generic: bool) -> bool:
 _ACTIVE_PROBES = {
     "WEB-CMDI-001": CMD_PROBE,
     "WEB-SSTI-001": SSTI_PROBE,
-    "WEB-FILE-001": "../WCS_NONEXISTENT_7f31a9",
+    "WEB-FILE-001": "../../../../etc/passwd",
     "WEB-REDIR-001": "https://example.invalid/wcs",
     "WEB-XSS-001": XSS_PROBE,
 }
@@ -760,11 +794,28 @@ class Scanner:
 
     def _confirm_file_path(self, finding: Finding, probe: str, baseline: Response, tested: Response) -> Finding | None:
         method = finding.method
+        root_record = re.compile(r"(?m)^root:[^:\r\n]*:0:0:")
+        if (finding.rule == "WEB-FILE-001" and root_record.search(tested.text)
+                and not root_record.search(baseline.text)):
+            return self._finding(
+                rule=finding.rule, title="Path traversal file read confirmed",
+                severity="high", confidence="high", url=finding.url,
+                parameter=finding.parameter,
+                evidence=("The traversal probe returned a Unix passwd root-record marker "
+                          "absent from the baseline; response contents are not retained."),
+                vector=(f"GET {redact_url(finding.url)} with "
+                        f"{finding.parameter}=../../../../etc/passwd."),
+                patch=finding.patch, method=method,
+                request_fields=finding.request_fields, proof_payload=probe,
+                expected_evidence="Unix passwd root-record marker absent from baseline",
+                flag_path=("A server-side file read is confirmed. Verify a challenge-specific "
+                           "flag path manually; no file contents are included in this report."),
+            )
         if finding.rule == "WEB-FILE-001" and tested.status != baseline.status:
             return self._finding(rule=finding.rule, title="Path input changes resource behavior", severity="low", confidence="medium",
                 url=finding.url, parameter=finding.parameter,
-                evidence=f"A traversal-shaped nonexistent path changes HTTP status {baseline.status} -> {tested.status}; no file was read.",
-                vector=f"Set {finding.parameter}=../WCS_NONEXISTENT_7f31a9 to reproduce the differential.", patch=finding.patch,
+                evidence=f"A traversal-shaped path changes HTTP status {baseline.status} -> {tested.status}; the response did not contain a known file marker.",
+                vector=f"Set {finding.parameter}={probe} to reproduce the differential.", patch=finding.patch,
                 method=method, request_fields=finding.request_fields, proof_payload=probe,
                 expected_evidence=f"HTTP status differs from baseline {baseline.status}")
         return None
@@ -1063,10 +1114,10 @@ class Scanner:
                 continue
         return routes
 
-    def _enqueue_routes(self, response: Response, routes: list, seen: set[str], queue: deque) -> None:
+    def _enqueue_routes(self, base_url: str, routes: list, seen: set[str], queue: deque) -> None:
         for href in routes:
             try:
-                nxt = self._clean_url(urljoin(response.url, href))
+                nxt = self._clean_url(urljoin(base_url, href))
                 parsed_nxt = urlsplit(nxt)
                 if parsed_nxt.scheme not in {"http", "https"}:
                     continue
@@ -1074,6 +1125,103 @@ class Scanner:
                     queue.append(nxt)
             except ValueError:
                 continue
+
+    def _discovery_url(self, base_url: str, candidate: str) -> str | None:
+        if not candidate or len(candidate) > 2048:
+            return None
+        try:
+            url = self._clean_url(urljoin(base_url, candidate))
+            parsed = urlsplit(url)
+        except ValueError:
+            return None
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return None
+        return url if self._in_scope(url) else None
+
+    def _robots_path_hints(self, origin_url: str) -> tuple[list[str], list[str]]:
+        if self.requests_sent >= self.max_requests:
+            return [], []
+        try:
+            response = self._request(urljoin(origin_url, "robots.txt"))
+        except (OSError, RuntimeError, ValueError):
+            return [], []
+        if response.status != 200:
+            return [], []
+        sitemaps, paths = _robots_hints(response.text)
+        route_urls = [
+            url for path in paths
+            if (url := self._discovery_url(origin_url, path)) is not None
+        ]
+        sitemap_urls = [
+            url for path in sitemaps
+            if (url := self._discovery_url(origin_url, path)) is not None
+        ]
+        return route_urls, sitemap_urls
+
+    def _sitemap_path_hints(self, sitemap_urls: list[str]) -> list[str]:
+        pending = list(dict.fromkeys(sitemap_urls))
+        visited: set[str] = set()
+        routes: list[str] = []
+        while pending and len(visited) < MAX_SITEMAP_FILES and self.requests_sent < self.max_requests:
+            sitemap = pending.pop(0)
+            if sitemap in visited:
+                continue
+            visited.add(sitemap)
+            response = self._sitemap_response(sitemap)
+            if response is None:
+                continue
+            locations = _sitemap_locations(response.text)
+            if self._extend_sitemap_routes(sitemap, response.text, locations, pending, visited, routes):
+                continue
+            self._append_sitemap_routes(sitemap, locations, routes)
+            if len(routes) >= MAX_SITEMAP_ROUTES:
+                return routes[:MAX_SITEMAP_ROUTES]
+        return routes
+
+    def _sitemap_response(self, sitemap: str):
+        try:
+            response = self._request(sitemap)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        return response if response.status == 200 else None
+
+    def _extend_sitemap_routes(self, sitemap: str, body: str, locations: list[str],
+                               pending: list[str], visited: set[str], routes: list[str]) -> bool:
+        if not re.search(r"<\s*sitemapindex\b", body[:MAX_BODY], re.I):
+            return False
+        nested = [url for value in locations
+                  if (url := self._discovery_url(sitemap, value)) is not None]
+        pending.extend(url for url in nested if url not in visited and url not in pending)
+        return True
+
+    def _append_sitemap_routes(self, sitemap: str, locations: list[str], routes: list[str]) -> None:
+        for value in locations:
+            url = self._discovery_url(sitemap, value)
+            if url is not None and url not in routes:
+                routes.append(url)
+                if len(routes) >= MAX_SITEMAP_ROUTES:
+                    return
+
+    def _discover_auxiliary_routes(self) -> list[str]:
+        """Seed crawling from site metadata and a small common-route shortlist."""
+        origin_url = f"{self.origin[0]}://{self.origin[1]}/"
+        routes, declared_sitemaps = self._robots_path_hints(origin_url)
+        default_sitemap = urljoin(origin_url, "sitemap.xml")
+        sitemap_urls = list(dict.fromkeys((*declared_sitemaps, default_sitemap)))
+        sitemap_routes = self._sitemap_path_hints(sitemap_urls)
+        common_routes = []
+        if urlsplit(self.target).path in {"", "/"}:
+            common_routes = [
+                url for path in COMMON_ROUTE_PATHS
+                if (url := self._discovery_url(origin_url, path)) is not None
+            ]
+        return list(dict.fromkeys((*common_routes, *routes, *sitemap_routes)))[:MAX_AUXILIARY_ROUTES]
+
+    def _has_discovery_budget(self) -> bool:
+        if self.inventory_urls:
+            return False
+        reserve = min(16, max(10, self.max_requests // 2)) if self.active else 0
+        return self.requests_sent < self.max_requests - reserve
 
     def _crawl(self, report: ScanReport) -> tuple[int, list[Finding], int]:
         queue = deque(dict.fromkeys((self.target, *self.inventory_urls)))
@@ -1086,27 +1234,55 @@ class Scanner:
             if url in seen:
                 continue
             seen.add(url)
-            try:
-                response = self._request(url)
-            except (OSError, RuntimeError, ValueError):
-                report.errors.append(f"{redact_url(url)}: request failed")
-                continue
-            successful_pages += 1
-            parser = PageParser()
-            ctype = response.headers.get("content-type", "")
-            is_html = "html" in ctype or HTML_MARKER in response.text[:500].lower()
-            if is_html:
-                parser.feed(response.text)
-            self.observations[response.url] = self._observe(response, parser)
-            items = self._posture_findings(response) + self._passive_findings(response, parser)
-            report.findings.extend(items)
-            candidates.extend(item for item in items if item.rule in {"WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001", "WEB-REDIR-001", "WEB-XSS-001"})
-            routes = list(parser.links)
-            if is_html:
-                routes.extend(self._script_routes(response, parser, report))
-            discovered_routes += len(routes)
-            self._enqueue_routes(response, routes, seen, queue)
+            success, page_candidates, page_routes = self._crawl_page(url, queue, seen, report)
+            successful_pages += int(success)
+            candidates.extend(page_candidates)
+            discovered_routes += page_routes
         return successful_pages, candidates, discovered_routes
+
+    def _crawl_page(self, url: str, queue: deque, seen: set[str],
+                    report: ScanReport) -> tuple[bool, list[Finding], int]:
+        try:
+            response = self._request(url)
+        except (OSError, RuntimeError, ValueError):
+            report.errors.append(f"{redact_url(url)}: request failed")
+            return False, [], 0
+        parser = PageParser()
+        is_html = self._parse_page(response, parser)
+        self.observations[response.url] = self._observe(response, parser)
+        items = self._posture_findings(response) + self._passive_findings(response, parser)
+        report.findings.extend(items)
+        candidates = [item for item in items if item.rule in {
+            "WEB-SQLI-001", "WEB-SSTI-001", "WEB-CMDI-001", "WEB-FILE-001",
+            "WEB-REDIR-001", "WEB-XSS-001",
+        }]
+        routes = list(parser.links)
+        if is_html:
+            routes.extend(self._script_routes(response, parser, report))
+        self._enqueue_routes(response.url, routes, seen, queue)
+        auxiliary = self._crawl_auxiliary_routes(url, seen, queue, report)
+        return True, candidates, len(routes) + auxiliary
+
+    @staticmethod
+    def _parse_page(response: HTTPResponse, parser: PageParser) -> bool:
+        ctype = response.headers.get("content-type", "")
+        is_html = "html" in ctype or HTML_MARKER in response.text[:500].lower()
+        if is_html:
+            parser.feed(response.text)
+        return is_html
+
+    def _crawl_auxiliary_routes(self, url: str, seen: set[str], queue: deque,
+                                report: ScanReport) -> int:
+        if url != self.target or not self._has_discovery_budget():
+            return 0
+        routes = self._discover_auxiliary_routes()
+        self._enqueue_routes(self.target, routes, seen, queue)
+        if routes:
+            report.coverage.append(
+                f"Discovered {len(routes)} same-origin route candidate(s) from robots.txt/sitemaps "
+                "and a bounded common-path shortlist; the route list is bounded and may be incomplete."
+            )
+        return len(routes)
 
     def _run_active_probes(self, report: ScanReport, candidates: list[Finding]) -> None:
         probe_priority = {
