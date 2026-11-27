@@ -94,7 +94,7 @@ same-origin scan with `--from-inventory`; GET routes are used as seeds while
 write routes remain review-only:
 
 ```powershell
-webchallscan --source .\\dist --source-origin https://challenge.example --format json > routes.json
+webchallscan --source .\dist --source-origin https://challenge.example --format json > routes.json
 webchallscan https://challenge.example/ --from-inventory routes.json
 ```
 
