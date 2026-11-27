@@ -13,14 +13,18 @@ from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
 from .burp_session import export_burp_session
 from .cookie_audit import audit_session_file
-from .json_checks import load_json_cases, run_json_cases
 from .jwt_audit import audit_jwt_file
+from .json_checks import load_json_cases, run_json_cases
 from .markdown_report import render_markdown
 from .network import observe_cdp
 from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
+from .snippets import render_snippets
+from .source_map_audit import audit_source_map_file
+from .structured_report import render_structured_text
+from .source_inventory import source_inventory
 from .session import (
     BrowserSession,
     capture_cdp_session,
@@ -28,10 +32,6 @@ from .session import (
     listen_for_extension,
     load_session_file,
 )
-from .snippets import render_snippets
-from .source_inventory import source_inventory
-from .source_map_audit import audit_source_map_file
-from .structured_report import render_structured_text
 
 
 def parser() -> argparse.ArgumentParser:
