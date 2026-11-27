@@ -2,9 +2,16 @@ from webchallscan.cli import main
 from webchallscan.model import ScanReport
 
 
-def test_authorization_required(capsys):
-    assert main(["http://127.0.0.1/"]) == 2
-    assert "--authorized" in capsys.readouterr().err
+def test_explicit_url_is_sufficient_target_selection(capsys, monkeypatch):
+    report = ScanReport("http://127.0.0.1/", False, errors=["unreachable"])
+    monkeypatch.setattr("webchallscan.cli.scan_profiles", lambda *args, **kwargs: report)
+    assert main(["http://127.0.0.1/"]) == 3
+    assert "unreachable" in capsys.readouterr().out
+
+
+def test_browser_session_still_requires_authorization(capsys):
+    assert main(["--browser-session"]) == 2
+    assert "target URL" in capsys.readouterr().err
 
 
 def test_extension_path_does_not_require_scan_authorization(capsys):
@@ -29,7 +36,23 @@ def test_cli_defaults_to_both_profiles(monkeypatch, capsys):
     monkeypatch.setattr("webchallscan.cli.scan_profiles", fake_scan)
     assert main(["http://127.0.0.1/", "--authorized", "--color", "never"]) == 0
     assert captured["profiles"] == ("desktop", "mobile")
+    assert captured["active"] is True
     assert "Profiles: desktop,mobile" in capsys.readouterr().out
+
+
+def test_passive_switch_disables_validation_probes(monkeypatch, capsys):
+    report = ScanReport("http://127.0.0.1/", False, pages_scanned=1,
+                        profiles=("desktop", "mobile"))
+    captured = {}
+
+    def fake_scan(*args, **kwargs):
+        captured.update(kwargs)
+        return report
+
+    monkeypatch.setattr("webchallscan.cli.scan_profiles", fake_scan)
+    assert main(["http://127.0.0.1/", "--passive"]) == 0
+    assert captured["active"] is False
+    capsys.readouterr()
 
 
 def test_proxy_is_forwarded_to_scanner_without_changing_defaults(monkeypatch, capsys):

@@ -37,7 +37,16 @@ Administration → Background Tasks → Error Details. A scanner/server-side
 error is distinct from an unsuccessful Quality Gate.
 
 
-Deterministic, offline/no-AI black-box analysis for **authorized CTF Jeopardy web challenges** when backend source is unavailable. It accepts a URL, stays on the exact origin, crawls with fixed budgets, extracts forms and parameters, records evidence, and prints tailored validation vectors and defensive patches.
+Deterministic, no-AI black-box analysis for **CTF Jeopardy web challenges** when backend source is unavailable. It accepts a URL, stays on the exact origin, crawls with fixed budgets, checks common web vulnerability classes with bounded GET probes by default, records evidence, and prints tailored validation vectors and defensive patches. Use `--passive` when you want crawling and response inspection without validation probes.
+
+Route discovery starts from the supplied URL and follows same-origin links and
+literal GET routes found in JavaScript. It also reads `robots.txt` path hints
+and up to five same-origin sitemap files, then adds a fixed shortlist of common
+CTF paths such as `/admin`, `/graphql`, `/openapi.json`, `/debug`, and `/flag`,
+when scanning the origin root. All requests stay within the existing request
+and page budgets. This route inventory is a bounded candidate list; undisclosed,
+generated, authenticated, or JavaScript-only routes can remain unseen. Use the
+existing CDP/Burp inventory inputs when you already have those routes.
 
 It does not promise complete coverage. Passive parameter-name matches are labeled `validation-only`. `payload-ready` appears only after an active marker produces target-derived evidence. The scanner does not brute-force credentials, enumerate the Internet, submit destructive requests, or automatically retrieve protected data or flags.
 
@@ -57,10 +66,11 @@ desktop, mobile, or comparison profile.
 Authorization acknowledgment is mandatory:
 
 ```powershell
-webchallscan https://challenge.example/ --authorized
-webchallscan https://challenge.example/ --authorized --active --format text --color always
-webchallscan https://challenge.example/ --authorized --profile mobile
-webchallscan https://challenge.example/ --authorized --format json > report.json
+webchallscan https://challenge.example/
+webchallscan https://challenge.example/ --format text --color always
+webchallscan https://challenge.example/ --passive
+webchallscan https://challenge.example/ --profile mobile
+webchallscan https://challenge.example/ --format json > report.json
 ```
 
 ### Readable terminal reports
@@ -72,10 +82,10 @@ only for interactive terminals. Pipe or redirect output without escape codes
 by default, or select a mode explicitly:
 
 ```bash
-webchallscan https://challenge.example/ --authorized --color always
-webchallscan https://challenge.example/ --authorized --color never > scan.txt
-webchallscan https://challenge.example/ --authorized --active --verbose
-webchallscan https://challenge.example/ --authorized --format json > scan.json
+webchallscan https://challenge.example/ --color always
+webchallscan https://challenge.example/ --color never > scan.txt
+webchallscan https://challenge.example/ --active --verbose
+webchallscan https://challenge.example/ --format json > scan.json
 ```
 
 Text scan reports show at most **20 findings by default**, with high-severity
@@ -83,8 +93,8 @@ issues first. All finding counts remain visible. Adjust the display only
 without changing scanning or exit status:
 
 ```bash
-webchallscan https://challenge.example/ --authorized --top 5 --min-severity medium
-webchallscan https://challenge.example/ --authorized --verbose
+webchallscan https://challenge.example/ --top 5 --min-severity medium
+webchallscan https://challenge.example/ --verbose
 ```
 
 `--verbose` shows all findings by default and restores full vectors, replay
@@ -102,8 +112,8 @@ Create a readable, shareable scan summary in Markdown without terminal colors
 or changing the JSON report schema:
 
 ```bash
-webchallscan https://challenge.example/ --authorized --active --format markdown > scan.md
-webchallscan https://challenge.example/ --authorized --active --format markdown --verbose > full-scan.md
+webchallscan https://challenge.example/ --active --format markdown > scan.md
+webchallscan https://challenge.example/ --active --format markdown --verbose > full-scan.md
 ```
 
 The Markdown view contains the severity table, redacted targets, evidence,
