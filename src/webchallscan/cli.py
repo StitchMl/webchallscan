@@ -13,17 +13,14 @@ from .api_contract import load_contract, validate_contract
 from .burp_import import import_burp_xml
 from .burp_session import export_burp_session
 from .cookie_audit import audit_session_file
-from .jwt_audit import audit_jwt_file
 from .json_checks import load_json_cases, run_json_cases
+from .jwt_audit import audit_jwt_file
 from .markdown_report import render_markdown
 from .network import observe_cdp
 from .planner import inventory_get_urls, load_inventory, plan_inventory
 from .replay import render_burp_procedure
 from .report import render_json, render_text
 from .scanner import scan_profiles
-from .snippets import render_snippets
-from .source_map_audit import audit_source_map_file
-from .structured_report import render_structured_text
 from .session import (
     BrowserSession,
     capture_cdp_session,
@@ -31,6 +28,10 @@ from .session import (
     listen_for_extension,
     load_session_file,
 )
+from .snippets import render_snippets
+from .source_inventory import source_inventory
+from .source_map_audit import audit_source_map_file
+from .structured_report import render_structured_text
 
 
 def parser() -> argparse.ArgumentParser:
@@ -69,6 +70,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--audit-session-file", metavar="JSON", help="offline aggregate cookie encoding and JWT audit for existing session JSON")
     p.add_argument("--audit-source-map-file", metavar="MAP", help="offline bounded source-map v3 audit without disclosing source paths/content")
     p.add_argument("--from-inventory", metavar="JSON", help="seed scan with same-origin GET routes from redacted inventory")
+    p.add_argument("--source", metavar="PATH", help="offline route inventory from one HTML file or a local static-site directory")
+    p.add_argument("--source-origin", metavar="ORIGIN", help="HTTP(S) origin that will serve the local source files")
     p.add_argument("--expect-origin", metavar="ORIGIN", help="require exact inventory origin in --plan-inventory mode")
     p.add_argument("--observe-limit", type=int, default=500, help="maximum observed requests (default: 500)")
     p.add_argument("--session-wait", type=float, default=120.0, help="seconds to wait for --listen-session (default: 120)")
@@ -168,6 +171,7 @@ _REPORT_ONLY_FLAGS = (
     "quick", "plan_inventory", "import_burp", "burp_session_from", "audit_jwt_file",
     "audit_session_file", "audit_source_map_file", "validate_api_contract",
     "check_api_cases", "check_json_cases", "burp_procedure", "export_curl", "export_python",
+    "source",
 )
 
 
@@ -312,6 +316,28 @@ def _handle_burp_import(args) -> int | None:
         return 0
     except (ValueError, OSError) as exc:
         return _fail(f"error: Burp XML import failed: {exc}")
+
+
+def _handle_source_inventory(args) -> int | None:
+    if args.source is None:
+        if args.source_origin:
+            return _fail("error: --source-origin requires --source")
+        return None
+    if (not args.source_origin or _truthy(
+            args, "url", "active", "cdp", "browser_session", "session_file",
+            "listen_session", "quick", "plan_inventory", "import_burp",
+            "validate_api_contract", "check_api_cases", "check_json_cases",
+            "audit_jwt_file", "audit_session_file", "audit_source_map_file",
+            "from_inventory", "burp_procedure", "burp_raw", "export_curl",
+            "export_python", "include_session_secrets")
+            or args.observe_network is not None):
+        return _fail("error: --source requires --source-origin and excludes other modes")
+    try:
+        result = source_inventory(args.source, args.source_origin)
+        print(_format_result(args, result, indent=2))
+        return 0
+    except (ValueError, OSError) as exc:
+        return _fail(f"error: local source inventory failed: {exc}")
 
 
 def _handle_json_cases(args) -> int | None:
@@ -535,6 +561,7 @@ _MODE_STEPS = (
     _handle_burp_session_export,
     _handle_jwt_audit,
     _handle_burp_import,
+    _handle_source_inventory,
     _handle_json_cases,
     _handle_quick,
     _handle_api_contract,
