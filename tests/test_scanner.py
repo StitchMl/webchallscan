@@ -213,6 +213,33 @@ def test_path_probe_tries_filtered_traversal_variant_within_request_budget(monke
     assert scanner.requests_sent == 3
 
 
+def test_encoded_traversal_probe_reaches_wire_for_extra_url_decode(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from webchallscan.scanner import FILE_PATH_ALTERNATE_PROBES, Response
+
+    target = "https://ctf.example/download?file=avatar.jpg"
+    scanner = Scanner(target, active=True)
+    finding = Finding(
+        rule="WEB-FILE-001", title="Possible file path injection",
+        severity="medium", confidence="low", url=target, parameter="file",
+        request_fields=(("file", "avatar.jpg"),),
+    )
+    sent = []
+
+    def capture(url, *_args, **_kwargs):
+        sent.append(url)
+        return Response(url, 200, {}, "image data")
+
+    monkeypatch.setattr(scanner, "_request", capture)
+    probe = FILE_PATH_ALTERNATE_PROBES[1]
+    scanner._send_probe(finding, probe)
+
+    wire_query = urlsplit(sent[0]).query
+    assert "%252f" in wire_query.casefold()
+    assert parse_qs(wire_query)["file"] == [probe]
+
+
 def test_path_probe_respects_budget_after_baseline_and_first_variant(monkeypatch):
     from webchallscan.scanner import Response
 
