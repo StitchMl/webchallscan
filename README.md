@@ -88,6 +88,20 @@ webchallscan https://challenge.example/ --active --verbose
 webchallscan https://challenge.example/ --format json > scan.json
 ```
 
+For a local static-site build, extract a redacted route inventory from HTML
+and JavaScript without making network requests. The result can seed a later
+same-origin scan with `--from-inventory`; GET routes are used as seeds while
+write routes remain review-only:
+
+```powershell
+webchallscan --source .\\dist --source-origin https://challenge.example --format json > routes.json
+webchallscan https://challenge.example/ --from-inventory routes.json
+```
+
+The local source mode is bounded to 2,000 HTML/JS files, 1 MB per file and
+20 MB total. It records literal routes and parameter names only; parameter
+values, source contents and write request bodies are discarded.
+
 Text scan reports show at most **20 findings by default**, with high-severity
 issues first. All finding counts remain visible. Adjust the display only
 without changing scanning or exit status:
